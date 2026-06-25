@@ -304,6 +304,17 @@ function backendStatusToFrontend(item: BackendAccount): Pick<
     }
   }
 
+  const invalidCount = Number(item.invalid_count ?? 0) || 0
+  if (invalidCount >= 1 && lastRefreshError && rawStatus !== STATUS_LIMITED) {
+    return {
+      enabled: true,
+      status: 'invalid',
+      status_reason: '已检测到鉴权异常，为防误删将在再次确认后自动移除。',
+      status_reason_code: 'account_invalid',
+      last_error_kind: 'auth_invalid',
+    }
+  }
+
   if (lastRefreshError && rawStatus !== STATUS_LIMITED && (imageQuotaUnknown || quota <= 0)) {
     return {
       enabled: true,

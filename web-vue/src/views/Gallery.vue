@@ -612,7 +612,7 @@ const galleryMetricItems = computed(() => [
   { label: '当前视图', value: totalItems.value, icon: 'lucide:image', iconClass: 'text-cyan-600', iconBgClass: 'bg-transparent' },
   { label: '图库总量', value: storageStats.value ? storageStats.value.image_count : counts.value.all, icon: 'lucide:archive', iconClass: 'text-violet-600', iconBgClass: 'bg-transparent' },
   { label: '当前占用', value: formatSize(totalSize.value), icon: 'lucide:database', iconClass: 'text-emerald-600', iconBgClass: 'bg-transparent' },
-  { label: '磁盘剩余', value: storageStats.value ? `${storageStats.value.disk_free_mb} MB` : '-', icon: 'lucide:hard-drive', iconClass: 'text-amber-600', iconBgClass: 'bg-transparent' },
+  { label: '磁盘剩余', value: storageStats.value ? formatSize(storageStats.value.disk_free_mb * 1024 * 1024) : '-', icon: 'lucide:hard-drive', iconClass: 'text-amber-600', iconBgClass: 'bg-transparent' },
 ])
 
 watch(pageSize, (value) => {

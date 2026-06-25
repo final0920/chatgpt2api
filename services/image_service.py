@@ -15,6 +15,7 @@ from services.config import config
 from services.image_storage_service import image_storage_service
 from services.image_tags_service import load_tags, remove_tags
 from utils.log import logger
+from utils.timezone import beijing_now, parse_to_beijing_naive
 
 THUMBNAIL_SIZE = (320, 320)
 IMAGE_LIST_MAINTENANCE_INTERVAL_SECS = 300
@@ -167,6 +168,7 @@ def _run_periodic_list_maintenance() -> None:
         if now - _last_list_maintenance_at < IMAGE_LIST_MAINTENANCE_INTERVAL_SECS:
             return
         config.cleanup_old_images()
+        image_storage_service.list_items("", refresh_index=False, verify_existing=True)
         cleanup_image_thumbnails()
         _last_list_maintenance_at = now
     finally:
@@ -188,6 +190,19 @@ def _schedule_periodic_list_maintenance() -> None:
 
 def _clean_text(value: object) -> str:
     return str(value or "").strip()
+
+
+def _expiry_for_item(item: dict[str, object], retention_days: int) -> tuple[bool, int | None]:
+    """Return display-only expiration state from created_at and retention days."""
+    if retention_days <= 0:
+        return False, None
+    created = parse_to_beijing_naive(item.get("created_at"))
+    if created is None:
+        return False, None
+    remaining = retention_days * 86400 - (beijing_now().replace(tzinfo=None) - created).total_seconds()
+    if remaining <= 0:
+        return True, 0
+    return False, int(remaining)
 
 
 def _media_type_for_item(item: dict[str, object]) -> str:
@@ -247,6 +262,7 @@ def list_images(
     else:
         _run_periodic_list_maintenance()
     all_tags = load_tags()
+    retention_days = config.image_retention_days
     raw_items = image_storage_service.list_items(
         base_url,
         start_date,
@@ -259,12 +275,16 @@ def list_images(
         path = str(item["path"])
         tags = all_tags.get(path, [])
         current_type = _media_type_for_item(item)
+        expired, expires_in_seconds = _expiry_for_item(item, retention_days)
         normalized_items.append({
             **item,
             "type": current_type,
+            "filename": str(item.get("name") or Path(path).name),
             "url": str(item.get("url") or f"{base_url.rstrip('/')}/images/{path}"),
             "thumbnail_url": thumbnail_url(base_url, path),
             "tags": tags,
+            "expired": expired,
+            "expires_in_seconds": expires_in_seconds,
         })
 
     tag_filter = tag.strip()
@@ -303,6 +323,7 @@ def list_images(
         "total": total,
         "total_size": total_size,
         "counts": counts,
+        "retention_days": retention_days,
         "limit": page_size,
         "offset": safe_offset,
         "page": page,

@@ -328,7 +328,7 @@
               </section>
             </div>
 
-            <section class="detail-timeline">
+            <section v-if="selectedHasTimeline" class="detail-timeline">
               <div class="detail-timeline__header">
                 <div>
                   <span class="detail-timeline__title">步骤耗时</span>
@@ -381,7 +381,7 @@
               </div>
 
               <div v-if="selectedTimelineGroups.length" class="detail-timeline__details">
-                <button type="button" class="detail-timeline__toggle" @click="timelineDetailsExpanded = !timelineDetailsExpanded">
+                <button type="button" class="detail-timeline__toggle" @click.stop="toggleTimelineDetails">
                   <span>步骤明细</span>
                   <strong>{{ timelineDetailsVisible ? '收起' : '展开' }}</strong>
                 </button>
@@ -1091,7 +1091,12 @@ const timelineDetailsAutoExpanded = computed(() => {
   if (metricValueFromLog(item, 'stream_error_ms') > 0) return true
   return selectedBottleneckStep.value?.tone === 'danger'
 })
-const timelineDetailsVisible = computed(() => timelineDetailsExpanded.value || timelineDetailsAutoExpanded.value)
+const timelineDetailsVisible = computed(() => timelineDetailsExpanded.value)
+const selectedHasTimeline = computed(() => selectedTimelineSegments.value.length > 0 || selectedTimelineGroups.value.length > 0)
+
+function toggleTimelineDetails() {
+  timelineDetailsExpanded.value = !timelineDetailsExpanded.value
+}
 
 const selectedPrimaryDetailFields = computed<DetailField[]>(() => {
   const item = selectedLog.value
@@ -1914,9 +1919,12 @@ watch(activeLogView, () => {
   scheduleAutoRefresh()
 })
 
-watch(selectedLog, () => {
-  timelineDetailsExpanded.value = false
-})
+watch(
+  () => selectedLog.value?.id || '',
+  () => {
+    timelineDetailsExpanded.value = timelineDetailsAutoExpanded.value
+  },
+)
 
 watch(
   () => [

@@ -69,6 +69,7 @@ type BackendImagesResponse = {
   items?: BackendImageItem[]
   total?: number
   total_size?: number
+  retention_days?: number
   counts?: Partial<GalleryResponse['counts']>
   limit?: number
   offset?: number
@@ -183,12 +184,25 @@ function expiryFor(createdAtMs: number, retentionDays: number) {
   }
 }
 
+function expiryForItem(item: BackendImageItem, createdAtMs: number, retentionDays: number) {
+  if (typeof item.expired === 'boolean' || item.expires_in_seconds !== undefined) {
+    const remaining = item.expires_in_seconds === null || item.expires_in_seconds === undefined
+      ? null
+      : Math.max(0, Number(item.expires_in_seconds) || 0)
+    return {
+      expired: Boolean(item.expired),
+      expires_in_seconds: remaining,
+    }
+  }
+  return expiryFor(createdAtMs, retentionDays)
+}
+
 function mapFile(item: BackendImageItem, retentionDays: number): GalleryFile {
   const path = cleanString(item.path || item.rel || item.name)
-  const name = cleanString(item.name || path.split('/').pop() || path)
+  const name = cleanString(item.filename || item.name || path.split('/').pop() || path)
   const createdAt = cleanString(item.created_at)
   const createdAtMs = parseTimeMs(createdAt)
-  const expiry = expiryFor(createdAtMs, retentionDays)
+  const expiry = expiryForItem(item, createdAtMs, retentionDays)
   const safePath = path || name
   return {
     filename: name || safePath,
@@ -270,10 +284,11 @@ async function listMappedFiles(params?: GalleryListParams) {
   if (params?.limit !== undefined && Number.isFinite(params.limit)) requestParams.limit = Number(params.limit)
   if (params?.offset !== undefined && Number.isFinite(params.offset)) requestParams.offset = Number(params.offset)
 
-  const [images, retentionDays] = await Promise.all([
-    apiClient.get<never, BackendImagesResponse>('/api/images', { params: requestParams }),
-    getRetentionDays(),
-  ])
+  const images = await apiClient.get<never, BackendImagesResponse>('/api/images', { params: requestParams })
+  const responseRetentionDays = Number(images.retention_days)
+  const retentionDays = Number.isFinite(responseRetentionDays) && responseRetentionDays >= 1
+    ? Math.floor(responseRetentionDays)
+    : await getRetentionDays()
 
   return {
     files: (images.items || []).map((item) => mapFile(item, retentionDays)),
