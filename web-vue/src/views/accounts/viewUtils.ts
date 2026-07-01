@@ -507,6 +507,19 @@ export function accountSourceText(item: Account): string {
   return `${type} / ${sourceType}`
 }
 
+const CHANNEL_LABELS: Record<string, string> = {
+  web: '网页注册',
+  microsoft: '微软邮箱',
+  cpa_json: 'CPA 导入',
+  oauth_login: '手动授权',
+  codex: 'Codex',
+}
+
+export function accountChannelText(item: Account): string {
+  const sourceType = cleanString(item.source_type) || 'web'
+  return CHANNEL_LABELS[sourceType] || sourceType
+}
+
 export function accountProxyText(item: Account): string {
   return proxyReferenceLabel(item.proxy)
 }

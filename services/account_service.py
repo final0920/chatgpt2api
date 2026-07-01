@@ -536,6 +536,49 @@ class AccountService:
         )
         return new_token
 
+    @classmethod
+    def _extract_account_email(cls, access_token: str, id_token: str = "") -> str:
+        """从 access_token / id_token 的 JWT 声明里解出账号邮箱（尽力而为）。"""
+        access_payload = cls._decode_jwt_payload(access_token)
+        profile_claim = access_payload.get("https://api.openai.com/profile")
+        if isinstance(profile_claim, dict):
+            email = str(profile_claim.get("email") or "").strip()
+            if email:
+                return email
+        id_payload = cls._decode_jwt_payload(id_token)
+        return str(id_payload.get("email") or access_payload.get("email") or "").strip()
+
+    def reauthorize_account(self, old_access_token: str, token_data: dict, event: str = "reauthorize") -> dict:
+        """用重新授权换出的新 token 三件套，原地替换指定旧账号。
+
+        仅更新 access/refresh/id_token 并清除异常状态，保留旧账号的
+        source_type / group_id / email / password 等元数据（原地替换语义）。
+        会校验新旧账号 email 一致，避免误把别的账号授权覆盖到目标账号上。
+        """
+        old_token = self.resolve_access_token(old_access_token) or str(old_access_token or "").strip()
+        current = self.get_account(old_token)
+        if current is None:
+            raise ValueError("目标账号不存在或已被移除")
+        new_access = str(token_data.get("access_token") or "").strip()
+        if not new_access:
+            raise ValueError("重新授权没有返回 access_token")
+        old_email = str(current.get("email") or "").strip().lower()
+        new_email = self._extract_account_email(new_access, str(token_data.get("id_token") or "")).lower()
+        if old_email and new_email and old_email != new_email:
+            raise ValueError(
+                f"重新授权登录的账号（{new_email}）与目标账号（{old_email}）不一致，已取消原地替换以防数据错乱"
+            )
+        new_token = self._apply_refreshed_tokens(old_token, token_data, event)
+        account = self.get_account(new_token)
+        if account is not None and account.get("status") in {"异常", "禁用"}:
+            account = self.update_account(new_token, {"status": "正常"}, quiet=True) or account
+        log_service.add(
+            LOG_TYPE_ACCOUNT,
+            "重新授权原地替换账号",
+            {"token": anonymize_token(new_token), "email": new_email or old_email},
+        )
+        return account or {}
+
     def refresh_access_token(self, access_token: str, *, force: bool = False, event: str = "refresh_access_token") -> str:
         if not access_token:
             return ""

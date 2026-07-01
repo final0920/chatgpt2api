@@ -33,10 +33,12 @@ import { actionMenuGroups } from './menuItems'
 const props = withDefaults(defineProps<{
   item: Account
   refreshing?: boolean
+  refreshingOauth?: boolean
   resetting?: boolean
   align?: 'start' | 'end'
 }>(), {
   refreshing: false,
+  refreshingOauth: false,
   resetting: false,
   align: 'start',
 })
@@ -45,6 +47,8 @@ const emit = defineEmits<{
   (e: 'edit'): void
   (e: 'toggle-enabled'): void
   (e: 'refresh-token'): void
+  (e: 'refresh-oauth'): void
+  (e: 'reauthorize'): void
   (e: 'reset-state'): void
   (e: 'remove'): void
 }>()
@@ -59,6 +63,15 @@ const menuItems = computed<ActionMenuItem[]>(() => actionMenuGroups(
       key: 'refresh-token',
       label: props.refreshing ? '刷新中...' : '刷新账号信息和额度',
       disabled: props.refreshing,
+    },
+    {
+      key: 'refresh-oauth',
+      label: props.refreshingOauth ? '刷新令牌中...' : '刷新令牌(修复 401)',
+      disabled: props.refreshingOauth,
+    },
+    {
+      key: 'reauthorize',
+      label: '重新授权',
     },
     {
       key: 'reset-state',
@@ -84,6 +97,8 @@ const menuItems = computed<ActionMenuItem[]>(() => actionMenuGroups(
 function handleSelect(key: string) {
   if (key === 'toggle-enabled') emit('toggle-enabled')
   if (key === 'refresh-token') emit('refresh-token')
+  if (key === 'refresh-oauth') emit('refresh-oauth')
+  if (key === 'reauthorize') emit('reauthorize')
   if (key === 'reset-state') emit('reset-state')
   if (key === 'remove') emit('remove')
 }

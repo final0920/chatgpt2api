@@ -150,6 +150,18 @@ class OAuthLoginFinishRequest(BaseModel):
     callback: str = ""
 
 
+class AccountRefreshTokenRequest(BaseModel):
+    """用账号自身 refresh_token 强制换发新 access_token（修复 401）。"""
+    access_token: str = ""
+
+
+class AccountReauthorizeRequest(BaseModel):
+    """重新授权后原地替换目标账号：换出的新 token 覆盖回同一账号。"""
+    session_id: str = ""
+    callback: str = ""
+    target_access_token: str = ""
+
+
 def _account_payload_token(item: dict[str, Any]) -> str:
     return str(item.get("access_token") or item.get("accessToken") or "").strip()
 
@@ -551,6 +563,54 @@ def create_router() -> APIRouter:
 
         return {"progress_id": progress_id}
 
+    @router.post("/api/accounts/refresh-token")
+    async def refresh_account_access_token(
+            body: AccountRefreshTokenRequest,
+            authorization: str | None = Header(default=None),
+    ):
+        """用账号自身的 refresh_token 强制换发新的 access_token（修复 401 异常）。
+
+        与 /api/accounts/refresh（重新拉取远端状态/额度）不同：这里直接走
+        OAuth refresh_token 授权拿到新 at/rt/id_token 并原地落盘，适合
+        access_token 已 401、但 refresh_token 仍有效的异常账号。
+        """
+        require_admin(authorization)
+        access_token = str(body.access_token or "").strip()
+        if not access_token:
+            raise HTTPException(status_code=400, detail={"error": "access_token is required"})
+        resolved = account_service.resolve_access_token(access_token) or access_token
+        account = account_service.get_account(resolved)
+        if account is None:
+            raise HTTPException(status_code=404, detail={"error": "account not found"})
+        if not str(account.get("refresh_token") or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "该账号缺少 refresh_token，无法刷新令牌，请改用『重新授权』"},
+            )
+        new_token = await run_in_threadpool(
+            account_service.refresh_access_token,
+            resolved,
+            force=True,
+            event="manual_refresh_token",
+        )
+        rotated = bool(new_token and new_token != resolved)
+        updated = (
+            account_service.get_account(new_token)
+            or account_service.get_account(resolved)
+            or account
+        )
+        refresh_error = str((updated or {}).get("last_token_refresh_error") or "").strip()
+        if not rotated and refresh_error:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": f"刷新令牌失败（refresh_token 可能已失效，请改用『重新授权』）：{refresh_error}"},
+            )
+        return {
+            "item": updated,
+            "rotated": rotated,
+            "items": account_service.list_accounts(),
+        }
+
     @router.get("/api/accounts/refresh/progress/{progress_id}")
     async def get_refresh_progress(progress_id: str, authorization: str | None = Header(default=None)):
         require_admin(authorization)
@@ -703,6 +763,36 @@ def create_router() -> APIRouter:
             "errors": refresh_result.get("errors", []),
             "items": refresh_result.get("items", add_result.get("items", [])),
         }
+
+    @router.post("/api/accounts/oauth/reauthorize")
+    async def reauthorize_account(
+            body: AccountReauthorizeRequest,
+            authorization: str | None = Header(default=None),
+    ):
+        """重新授权：换出新 token 三件套后，原地替换指定异常账号。
+
+        复用 /api/accounts/oauth/start 起始的 PKCE 会话；这里的 finish 不新增
+        账号，而是把新 token 覆盖回 target_access_token 指向的旧账号，保留其
+        渠道(source_type)/分组(group_id)/邮箱等元数据，并清除 401 异常状态。
+        """
+        require_admin(authorization)
+        target = str(body.target_access_token or "").strip()
+        if not target:
+            raise HTTPException(status_code=400, detail={"error": "target_access_token is required"})
+        resolved = account_service.resolve_access_token(target) or target
+        if account_service.get_account(resolved) is None:
+            raise HTTPException(status_code=404, detail={"error": "target account not found"})
+        try:
+            tokens = await run_in_threadpool(oauth_login_service.finish, body.session_id, body.callback)
+        except OAuthLoginError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        try:
+            account = await run_in_threadpool(
+                account_service.reauthorize_account, resolved, tokens, "reauthorize"
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        return {"item": account, "items": account_service.list_accounts()}
 
     @router.get("/api/cpa/pools")
     async def list_cpa_pools(authorization: str | None = Header(default=None)):

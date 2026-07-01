@@ -216,6 +216,7 @@ export function useAccountsPage() {
   const batchActionLabel = ref('')
   const viewMode = ref<AccountsViewMode>('list')
   const refreshingAccountId = ref('')
+  const refreshingOAuthAccountId = ref('')
   const resettingAccountId = ref('')
   const importBusy = ref(false)
   const exportBusy = ref(false)
@@ -1489,6 +1490,65 @@ export function useAccountsPage() {
     }
   }
 
+  async function refreshOAuthToken(accountId: string) {
+    const confirmed = await confirmDialog.ask({
+      title: '刷新 OAuth 令牌',
+      message: `即将用账号 ${accountId} 的 refresh_token 强制换发新的 access_token，用于修复 401 异常。是否继续？`,
+      confirmText: '刷新令牌',
+      cancelText: '取消',
+    })
+    if (!confirmed) return
+
+    refreshingOAuthAccountId.value = accountId
+    toast.info(`正在为账号 ${accountId} 刷新 OAuth 令牌...`)
+    try {
+      await accountsApi.refreshOAuthToken(accountId)
+      toast.success(`账号 ${accountId} 令牌已刷新`)
+      await loadData({ silentErrorToast: true })
+    } catch (error) {
+      toast.error(`账号 ${accountId} 刷新令牌失败：${normalizeErrorMessage(error)}`)
+      await loadData({ silentErrorToast: true })
+    } finally {
+      refreshingOAuthAccountId.value = ''
+    }
+  }
+
+  async function reauthorizeAccount(item: Account) {
+    const channel = item.source_type || 'web'
+    const confirmed = await confirmDialog.ask({
+      title: '重新授权账号',
+      message: `即将为账号 ${item.id}（${item.email || '未知邮箱'}，渠道：${channel}）重新授权。\n\n步骤：确认后会自动打开 OpenAI 登录页，请用该账号登录；登录完成后浏览器会跳转到一个 callback 地址（可能提示无法访问，属正常），把浏览器地址栏的完整 URL 复制回来粘贴即可。\n\n换出的新令牌会「原地替换」该账号（保留渠道/分组），是否继续？`,
+      confirmText: '开始授权',
+      cancelText: '取消',
+    })
+    if (!confirmed) return
+
+    try {
+      const start = await accountsApi.startReauthorize(item.email || '')
+      const authorizeUrl = String(start?.authorize_url || '').trim()
+      const sessionId = String(start?.session_id || '').trim()
+      if (!authorizeUrl || !sessionId) {
+        throw new Error('未能创建授权会话，请重试')
+      }
+      window.open(authorizeUrl, '_blank', 'noopener')
+      const callback = window.prompt(
+        `请在新打开的页面用账号 ${item.email || item.id} 登录。\n登录后浏览器会跳转到 callback 地址（可能显示无法访问，属正常现象）。\n\n请把该地址栏的完整 URL 粘贴到这里：`,
+        '',
+      )
+      if (callback === null || !callback.trim()) {
+        toast.info('已取消重新授权')
+        return
+      }
+      toast.info(`正在为账号 ${item.id} 完成授权并替换令牌...`)
+      await accountsApi.finishReauthorize(item.id, sessionId, callback.trim())
+      toast.success(`账号 ${item.id} 已重新授权，令牌已原地替换`)
+      await loadData({ silentErrorToast: true })
+    } catch (error) {
+      toast.error(`账号 ${item.id} 重新授权失败：${normalizeErrorMessage(error)}`)
+      await loadData({ silentErrorToast: true })
+    }
+  }
+
   async function resetAccountState(accountId: string) {
     const confirmed = await confirmDialog.ask({
       title: '重置账号状态',
@@ -1862,6 +1922,7 @@ export function useAccountsPage() {
     batchActionLabel,
     viewMode,
     refreshingAccountId,
+    refreshingOAuthAccountId,
     resettingAccountId,
     importBusy,
     exportBusy,
@@ -1963,6 +2024,8 @@ export function useAccountsPage() {
     saveAccount,
     toggleEnabled,
     refreshToken,
+    refreshOAuthToken,
+    reauthorizeAccount,
     resetAccountState,
     removeAccount,
     runBulkAction,

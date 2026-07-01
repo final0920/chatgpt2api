@@ -742,6 +742,31 @@ export const accountsApi = {
     return { status: 'ok', account: undefined as unknown as Account }
   },
 
+  refreshOAuthToken: async (accountId: string) => {
+    return apiClient.post<
+      { access_token: string },
+      { item?: Account; rotated?: boolean; items?: Account[] }
+    >('/api/accounts/refresh-token', { access_token: resolveToken(accountId) })
+  },
+
+  startReauthorize: async (emailHint = '') => {
+    return apiClient.post<
+      { email_hint: string },
+      { session_id: string; authorize_url: string; expires_in?: number; redirect_uri_prefix?: string }
+    >('/api/accounts/oauth/start', { email_hint: emailHint })
+  },
+
+  finishReauthorize: async (accountId: string, sessionId: string, callback: string) => {
+    return apiClient.post<
+      { session_id: string; callback: string; target_access_token: string },
+      { item?: Account; items?: Account[] }
+    >('/api/accounts/oauth/reauthorize', {
+      session_id: sessionId,
+      callback,
+      target_access_token: resolveToken(accountId),
+    })
+  },
+
   refreshAccountsWithProgress: (
     accountIdsOrTokens: string[],
     onProgress?: (progress: AccountRefreshProgress) => void,

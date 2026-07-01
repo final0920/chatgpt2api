@@ -102,7 +102,7 @@
                 />
               </th>
               <th class="py-3 pr-5">TOKEN</th>
-              <th class="py-3 pr-5">类型 / 来源</th>
+              <th class="py-3 pr-5">类型 / 渠道</th>
               <th class="py-3 pr-5">状态</th>
               <th class="py-3 pr-5">账户信息</th>
               <th class="py-3 pr-5">创建时间</th>
@@ -154,6 +154,7 @@
               <td class="py-4 pr-5 align-middle">
                 <div class="space-y-1 text-xs">
                   <p class="font-medium text-foreground">{{ accountSourceText(item) }}</p>
+                  <p class="text-muted-foreground">渠道：{{ accountChannelText(item) }}</p>
                 </div>
               </td>
               <td class="py-4 pr-5 align-middle">
@@ -192,11 +193,14 @@
                 <AccountActionButtons
                   :item="item"
                   :refreshing="refreshingAccountId === item.id"
+                  :refreshing-oauth="refreshingOAuthAccountId === item.id"
                   :resetting="resettingAccountId === item.id"
                   align="end"
                   @edit="openEditModal(item)"
                   @toggle-enabled="toggleEnabled(item)"
                   @refresh-token="refreshToken(item.id)"
+                  @refresh-oauth="refreshOAuthToken(item.id)"
+                  @reauthorize="reauthorizeAccount(item)"
                   @reset-state="resetAccountState(item.id)"
                   @remove="removeAccount(item.id)"
                 />
@@ -275,10 +279,13 @@
             class="mt-auto"
             :item="item"
             :refreshing="refreshingAccountId === item.id"
+            :refreshing-oauth="refreshingOAuthAccountId === item.id"
             :resetting="resettingAccountId === item.id"
             @edit="openEditModal(item)"
             @toggle-enabled="toggleEnabled(item)"
             @refresh-token="refreshToken(item.id)"
+            @refresh-oauth="refreshOAuthToken(item.id)"
+            @reauthorize="reauthorizeAccount(item)"
             @reset-state="resetAccountState(item.id)"
             @remove="removeAccount(item.id)"
           />
@@ -803,6 +810,7 @@ import type { Account } from '@/api/accounts'
 import { parseProxyReference } from '@/api/proxy'
 import { useAccountsPage, type AccountImportMode } from './accounts/useAccountsPage'
 import {
+  accountChannelText,
   accountCreatedText,
   accountPrimaryText,
   accountProxyText,
@@ -840,6 +848,7 @@ const {
   batchActionLabel,
   viewMode,
   refreshingAccountId,
+  refreshingOAuthAccountId,
   resettingAccountId,
   importBusy,
   exportBusy,
@@ -937,6 +946,8 @@ const {
   saveAccount,
   toggleEnabled,
   refreshToken,
+  refreshOAuthToken,
+  reauthorizeAccount,
   resetAccountState,
   removeAccount,
   runBulkAction,
