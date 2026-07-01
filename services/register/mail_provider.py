@@ -1935,6 +1935,372 @@ class OutlookTokenProvider(BaseMailProvider):
         return None
 
 
+# ==================== outlook007 接码渠道 ====================
+# 导入格式：每行 email----code_api_url（接码链接，无密码 / 无 refresh_token）。
+# 与 outlook_token 相互独立：不登录邮箱、不换 access_token，直接轮询接码链接取验证码。
+# 状态文件独立（outlook007_used.json），绝不影响 outlook_token 的池状态。
+OUTLOOK007_USED_FILE = DATA_DIR / "outlook007_used.json"
+_outlook007_state_lock = Lock()
+OUTLOOK007_RECORDED_STATES = {"used", "in_use", "failed"}
+OUTLOOK007_UNAVAILABLE_STATES = {"used", "failed"}
+
+
+def _load_outlook007_state() -> dict[str, dict[str, Any]]:
+    """读取 outlook007 邮箱池状态：{email_lower: {state, reason, updated_at}}。
+
+    兼容旧格式：纯字符串列表（历史“已用邮箱”）解释为 used。
+    """
+    data = read_json_file(
+        OUTLOOK007_USED_FILE,
+        name="outlook007_used.json",
+        default_factory=dict,
+        expected_types=(dict, list),
+    )
+    state: dict[str, dict[str, Any]] = {}
+    if isinstance(data, list):
+        for item in data:
+            key = str(item).strip().lower()
+            if key:
+                state[key] = {"state": "used", "reason": "", "updated_at": ""}
+    elif isinstance(data, dict):
+        for key, value in data.items():
+            email = str(key).strip().lower()
+            if not email:
+                continue
+            if isinstance(value, dict):
+                state[email] = {
+                    "state": str(value.get("state") or "used").strip() or "used",
+                    "reason": str(value.get("reason") or ""),
+                    "updated_at": str(value.get("updated_at") or ""),
+                }
+            else:
+                state[email] = {"state": str(value or "used").strip() or "used", "reason": "", "updated_at": ""}
+    return state
+
+
+def _save_outlook007_state(state: dict[str, dict[str, Any]]) -> None:
+    OUTLOOK007_USED_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ordered = {key: state[key] for key in sorted(state)}
+    write_json_file(OUTLOOK007_USED_FILE, ordered)
+
+
+def _outlook007_entry_available(entry: dict[str, Any] | None) -> bool:
+    """未记录 / in_use 已陈旧 → 可领用；used / failed → 不可领用。"""
+    if not isinstance(entry, dict):
+        return True
+    current = str(entry.get("state") or "")
+    if current in OUTLOOK007_UNAVAILABLE_STATES:
+        return False
+    if current == "in_use":
+        updated_at = str(entry.get("updated_at") or "")
+        try:
+            ts = datetime.fromisoformat(updated_at)
+            age = (datetime.now(timezone.utc) - (ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc))).total_seconds()
+            return age >= OUTLOOK_IN_USE_STALE_SECONDS
+        except Exception:
+            return True
+    return True
+
+
+def _outlook007_credential_available(store: dict[str, dict[str, Any]], credential: dict[str, Any]) -> bool:
+    key = str(credential.get("email") or "").strip().lower()
+    entry = store.get(key) if key else None
+    return _outlook007_entry_available(entry)
+
+
+def _set_outlook007_state(address: str, state: str, reason: str = "") -> None:
+    target = str(address or "").strip().lower()
+    if not target:
+        return
+    with _outlook007_state_lock:
+        store = _load_outlook007_state()
+        store[target] = {"state": str(state), "reason": str(reason or ""), "updated_at": datetime.now(timezone.utc).isoformat()}
+        _save_outlook007_state(store)
+
+
+def _release_outlook007_state(address: str) -> None:
+    """把 in_use 释放回未使用（仅当当前确实是 in_use 时）。"""
+    target = str(address or "").strip().lower()
+    if not target:
+        return
+    with _outlook007_state_lock:
+        store = _load_outlook007_state()
+        entry = store.get(target)
+        if isinstance(entry, dict) and str(entry.get("state") or "") == "in_use":
+            store.pop(target, None)
+            _save_outlook007_state(store)
+
+
+def reset_outlook007_pool_state(scope: str = "all") -> int:
+    """重置 outlook007 邮箱池状态。
+
+    scope=all 清空全部；scope=retryable/failed 释放 in_use 与 failed（保留 used）；
+    scope=busy/in_use 仅释放 in_use。返回被清除条目数。
+    """
+    with _outlook007_state_lock:
+        store = _load_outlook007_state()
+        if not store:
+            return 0
+        normalized = str(scope or "all").strip().lower()
+        if normalized in {"failed", "retryable"}:
+            target_states = {"failed", "in_use"}
+        elif normalized in {"busy", "in_use"}:
+            target_states = {"in_use"}
+        elif normalized == "all":
+            count = len(store)
+            _save_outlook007_state({})
+            return count
+        else:
+            # 未知 scope（如 invalid，outlook007 无该状态）对本池不做任何清除
+            return 0
+        remove = {key for key, value in store.items() if str(value.get("state") or "") in target_states}
+        for key in remove:
+            store.pop(key, None)
+        if remove:
+            _save_outlook007_state(store)
+        return len(remove)
+
+
+def outlook007_pool_stats(pool: list[dict[str, str]] | None = None) -> dict[str, int]:
+    """统计 outlook007 邮箱池各状态数量。pool 为该 provider 当前导入的邮箱列表。"""
+    store = _load_outlook007_state()
+    counts = {"unused": 0, "in_use": 0, "used": 0, "failed": 0}
+    if pool:
+        for credential in pool:
+            key = str(credential.get("email") or "").strip().lower()
+            entry = store.get(key) if key else None
+            state = str(entry.get("state") or "") if isinstance(entry, dict) else ""
+            if state in counts:
+                counts[state] += 1
+            else:
+                counts["unused"] += 1
+    else:
+        for entry in store.values():
+            state = str(entry.get("state") or "") if isinstance(entry, dict) else ""
+            if state in counts:
+                counts[state] += 1
+    counts["available"] = counts["unused"]
+    counts["busy"] = counts["in_use"]
+    counts["retryable"] = counts["failed"]
+    return counts
+
+
+def _parse_outlook007_pool_with_report(text: str) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """解析 outlook007 邮箱池文本，每行格式：email----code_api_url（接码链接）。"""
+    credentials: list[dict[str, str]] = []
+    seen: set[str] = set()
+    report: dict[str, Any] = {
+        "raw_lines": 0, "non_empty": 0, "valid": 0,
+        "duplicates": 0, "invalid": 0, "skipped": 0, "issues": [],
+    }
+    issues = report["issues"]
+    for line_no, raw_line in enumerate(str(text or "").splitlines(), start=1):
+        report["raw_lines"] += 1
+        line = _clean_outlook_value(raw_line)
+        if not line:
+            continue
+        report["non_empty"] += 1
+        if "----" not in line:
+            report["invalid"] += 1
+            _add_outlook_parse_issue(issues, line_no, "缺少 ---- 分隔符")
+            continue
+        # 用 partition 只在第一个 ---- 处切分：接码链接里含 = 与 &，但不含连续 ----
+        head, _, tail = line.partition("----")
+        email = _clean_outlook_value(head)
+        code_api_url = _clean_outlook_value(tail)
+        if "@" not in email:
+            report["invalid"] += 1
+            _add_outlook_parse_issue(issues, line_no, "邮箱格式不正确", email)
+            continue
+        if not (code_api_url.startswith("http://") or code_api_url.startswith("https://")):
+            report["invalid"] += 1
+            _add_outlook_parse_issue(issues, line_no, "缺少接码链接", email)
+            continue
+        key = email.lower()
+        if key in seen:
+            report["duplicates"] += 1
+            _add_outlook_parse_issue(issues, line_no, "重复邮箱，已合并", email)
+            continue
+        seen.add(key)
+        credentials.append({"email": email, "code_api_url": code_api_url})
+    report["valid"] = len(credentials)
+    report["skipped"] = int(report["duplicates"]) + int(report["invalid"])
+    return credentials, report
+
+
+def parse_outlook007_pool(text: str) -> list[dict[str, str]]:
+    return _parse_outlook007_pool_with_report(text)[0]
+
+
+def inspect_outlook007_pool(text: str) -> dict[str, Any]:
+    return _parse_outlook007_pool_with_report(text)[1]
+
+
+def _normalize_outlook007_pool(value: Any) -> list[dict[str, str]]:
+    """outlook007 邮箱池：支持纯文本或对象列表；直注模式（不展开加号别名）。"""
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def _add(email: str, code_api_url: str) -> None:
+        email = _clean_outlook_value(email)
+        code_api_url = _clean_outlook_value(code_api_url)
+        key = email.lower()
+        if "@" not in email or not code_api_url or key in seen:
+            return
+        seen.add(key)
+        items.append({"email": email, "code_api_url": code_api_url})
+
+    if isinstance(value, str):
+        for credential in parse_outlook007_pool(value):
+            _add(credential["email"], credential["code_api_url"])
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, str):
+                for credential in parse_outlook007_pool(item):
+                    _add(credential["email"], credential["code_api_url"])
+            elif isinstance(item, dict):
+                _add(
+                    item.get("email") or item.get("address") or "",
+                    item.get("code_api_url") or item.get("api_url") or item.get("url") or "",
+                )
+    return items
+
+
+def _parse_outlook007_received_at(value: Any) -> datetime | None:
+    """尽力解析接码接口的 received_at（ISO 字符串或 unix 时间戳）。解析不了返回 None。"""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        ts = float(value)
+        if ts > 1e12:
+            ts /= 1000.0
+        try:
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        except Exception:
+            return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        ts = float(text)
+        if ts > 1e12:
+            ts /= 1000.0
+        try:
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        except Exception:
+            return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+class Outlook007Provider(BaseMailProvider):
+    """outlook007 第三方接码渠道：每个邮箱配一个接码链接（email----code_api_url）。
+
+    邮箱池在应用配置里维护（mailboxes 字段）。create_mailbox() 从池中取一个未占用的
+    邮箱并加单飞锁（in_use），wait_for_code() 直接轮询该邮箱的接码链接读取验证码。
+    与 outlook_token 不同：无需 refresh_token、不登录邮箱、无密码字段。
+    """
+
+    name = "outlook007"
+
+    def __init__(self, entry: dict, conf: dict):
+        super().__init__(conf, str(entry.get("provider_ref") or ""))
+        self.label = str(entry.get("label") or self.provider_ref)
+        self.pool = _normalize_outlook007_pool(entry.get("mailboxes") or entry.get("pool"))
+        self.session = _create_session(conf)
+
+    def close(self) -> None:
+        self.session.close()
+
+    def create_mailbox(self, username: str | None = None) -> dict[str, Any]:
+        if not self.pool:
+            raise RuntimeError("outlook007 邮箱池为空，请在邮箱配置中导入 email----接码链接")
+        with _outlook007_state_lock:
+            store = _load_outlook007_state()
+            credential = next((item for item in self.pool if _outlook007_credential_available(store, item)), None)
+            if credential is None:
+                raise RuntimeError(
+                    f"[{self.label}] outlook007 邮箱池暂无可用邮箱"
+                    f"（共 {len(self.pool)} 个，已用尽或全部占用），请导入新邮箱或重置池状态"
+                )
+            store[credential["email"].strip().lower()] = {
+                "state": "in_use", "reason": "", "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            _save_outlook007_state(store)
+        return {
+            "provider": self.name,
+            "provider_ref": self.provider_ref,
+            "address": credential["email"],
+            "login_email": credential["email"],
+            "alias_of": "",
+            "label": self.label,
+            "code_api_url": credential["code_api_url"],
+        }
+
+    def fetch_latest_message(self, mailbox: dict[str, Any]) -> dict[str, Any] | None:
+        """轮询接码链接，取最新一封邮件，交给基类 wait_for_code + _extract_code 提取验证码。
+
+        实测接码接口返回的是邮件原文（验证码在 body 正文里），没有独立 code 字段，
+        因此这里把正文放进 text_content，复用项目通用的 _extract_code 从正文提取。
+        """
+        code_api_url = str(mailbox.get("code_api_url") or "").strip()
+        if not code_api_url:
+            raise RuntimeError("outlook007 邮箱缺少接码链接（code_api_url）")
+        try:
+            resp = self.session.get(
+                code_api_url,
+                headers={"Accept": "application/json", "User-Agent": self.conf["user_agent"]},
+                timeout=self.conf["request_timeout"],
+                verify=False,
+            )
+        except Exception:
+            return None
+        try:
+            data = resp.json()
+        except Exception:
+            data = {}
+        if resp.status_code != 200 or not isinstance(data, dict):
+            return None
+        status = str(data.get("status") or "").strip().lower()
+        if status == "no_new_code":
+            return None
+        # 验证码在邮件正文里（body/message/text），也兼容个别接口的独立 code 字段
+        text_content = str(
+            data.get("body") or data.get("message") or data.get("text")
+            or data.get("content") or data.get("code") or ""
+        )
+        if not text_content.strip():
+            return None
+        # 尽力过滤旧验证码：能可靠解析 received_at 且早于发码起点才丢弃（解析不了则放行，避免误杀真码）
+        raw_after = str(mailbox.get("_received_after") or "").strip()
+        if raw_after:
+            received_at = _parse_outlook007_received_at(
+                data.get("received_at") or data.get("received") or data.get("date")
+            )
+            if received_at is not None:
+                try:
+                    after_dt = datetime.fromisoformat(raw_after.replace("Z", "+00:00"))
+                    if after_dt.tzinfo is None:
+                        after_dt = after_dt.replace(tzinfo=timezone.utc)
+                except Exception:
+                    after_dt = None
+                if after_dt is not None and received_at < after_dt:
+                    return None
+        return {
+            "provider": self.name,
+            "mailbox": str(mailbox.get("address") or ""),
+            "message_id": str(data.get("id") or data.get("message_id") or data.get("uid") or ""),
+            "subject": str(data.get("subject") or data.get("title") or ""),
+            "text_content": text_content,
+            "html_content": str(data.get("html") or data.get("html_content") or ""),
+            "sender": str(data.get("from") or data.get("sender") or ""),
+            "received_at": data.get("received_at") or data.get("received") or data.get("date") or "",
+        }
+
+
 def _entries(mail_config: dict) -> list[dict]:
     result: list[dict] = []
     counters: dict[str, int] = {}
@@ -1992,6 +2358,8 @@ def _create_provider(mail_config: dict, provider: str = "", provider_ref: str = 
         return YydsMailProvider(entry, conf)
     if entry["type"] == "outlook_token":
         return OutlookTokenProvider(entry, conf)
+    if entry["type"] == "outlook007":
+        return Outlook007Provider(entry, conf)
     raise RuntimeError(f"不支持的 mail.provider: {entry['type']}")
 
 
@@ -2031,6 +2399,16 @@ def mark_mailbox_result(mailbox: dict, *, success: bool, error: Exception | str 
     仅对 outlook_token 邮箱生效：成功标记 used；失败时若是 token 失效标记 token_invalid，
     登录态问题标记 login_required，其余失败标记 failed（可重试但不会自动再次领用）。
     """
+    provider_name = str(mailbox.get("provider") or "")
+    if provider_name == Outlook007Provider.name:
+        address = str(mailbox.get("address") or "").strip()
+        if not address:
+            return
+        if success:
+            _set_outlook007_state(address, "used")
+        else:
+            _set_outlook007_state(address, "failed", str(error or "").strip()[:300])
+        return
     if str(mailbox.get("provider") or "") != OutlookTokenProvider.name:
         return
     address = str(mailbox.get("address") or "").strip()
@@ -2058,7 +2436,11 @@ def mark_mailbox_result(mailbox: dict, *, success: bool, error: Exception | str 
 
 def release_mailbox(mailbox: dict) -> None:
     """把 outlook_token 邮箱从 in_use 释放回未使用（用于流程主动放弃且未消费验证码时）。"""
-    if str(mailbox.get("provider") or "") != OutlookTokenProvider.name:
+    provider_name = str(mailbox.get("provider") or "")
+    if provider_name == Outlook007Provider.name:
+        _release_outlook007_state(str(mailbox.get("address") or ""))
+        return
+    if provider_name != OutlookTokenProvider.name:
         return
     _release_outlook_token_state(str(mailbox.get("address") or ""))
 

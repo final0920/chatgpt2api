@@ -33,6 +33,20 @@ def _merge_outlook_pool(old_text: str, new_text: str) -> str:
     return _serialize_outlook_pool(list(merged.values()))
 
 
+def _serialize_outlook007_pool(credentials: list[dict]) -> str:
+    return "\n".join(f'{c["email"]}----{c["code_api_url"]}' for c in credentials)
+
+
+def _merge_outlook007_pool(old_text: str, new_text: str) -> str:
+    """合并 outlook007 邮箱池，按邮箱去重，新导入的同名邮箱覆盖旧接码链接。"""
+    merged: dict[str, dict] = {}
+    for credential in mail_provider.parse_outlook007_pool(old_text or ""):
+        merged[credential["email"].strip().lower()] = credential
+    for credential in mail_provider.parse_outlook007_pool(new_text or ""):
+        merged[credential["email"].strip().lower()] = credential
+    return _serialize_outlook007_pool(list(merged.values()))
+
+
 def _outlook_credential_changed(old: dict | None, new: dict) -> bool:
     if not old:
         return False
@@ -127,7 +141,20 @@ class RegisterService:
         if not isinstance(providers, list):
             return
         for index, provider in enumerate(providers):
-            if not isinstance(provider, dict) or provider.get("type") != "outlook_token":
+            if not isinstance(provider, dict):
+                continue
+            if provider.get("type") == "outlook007":
+                pool_text = str(provider.get("mailboxes") or "")
+                credentials = mail_provider.parse_outlook007_pool(pool_text)
+                provider["mailboxes"] = ""
+                provider["mailboxes_count"] = len(credentials)
+                provider["mailboxes_base_count"] = len(credentials)
+                provider["mailboxes_alias_count"] = 0
+                provider["mailboxes_preview"] = [self._mask_email(c["email"]) for c in credentials]
+                provider["mailboxes_stats"] = mail_provider.outlook007_pool_stats(credentials)
+                provider["mailboxes_parse_stats"] = mail_provider.inspect_outlook007_pool(pool_text)
+                continue
+            if provider.get("type") != "outlook_token":
                 continue
             pool_text = str(provider.get("mailboxes") or "")
             base_credentials = mail_provider.parse_outlook_credentials(pool_text)
@@ -160,6 +187,11 @@ class RegisterService:
             for provider in old_providers
             if isinstance(provider, dict) and provider.get("type") == "outlook_token" and _provider_id(provider)
         }
+        old_outlook007_by_id = {
+            _provider_id(provider): provider
+            for provider in old_providers
+            if isinstance(provider, dict) and provider.get("type") == "outlook007" and _provider_id(provider)
+        }
         old_outlook_by_order = [
             provider
             for provider in old_providers
@@ -170,6 +202,21 @@ class RegisterService:
             if not isinstance(provider, dict):
                 continue
             _ensure_provider_id(provider)
+            if provider.get("type") == "outlook007":
+                old_o7 = old_outlook007_by_id.get(_provider_id(provider)) or {}
+                if not old_o7 and index < len(old_providers) and isinstance(old_providers[index], dict) and old_providers[index].get("type") == "outlook007":
+                    old_o7 = old_providers[index]
+                old_text = str(old_o7.get("mailboxes") or "") if old_o7.get("type") == "outlook007" else ""
+                new_text = str(provider.get("mailboxes") or "")
+                if new_text.strip():
+                    provider["mailboxes"] = _merge_outlook007_pool(old_text, new_text)
+                elif old_text:
+                    provider["mailboxes"] = _merge_outlook007_pool(old_text, "")
+                else:
+                    provider["mailboxes"] = ""
+                for key in ("mailboxes_count", "mailboxes_base_count", "mailboxes_alias_count", "mailboxes_preview", "mailboxes_stats", "mailboxes_parse_stats"):
+                    provider.pop(key, None)
+                continue
             if provider.get("type") != "outlook_token":
                 continue
             provider_id = _provider_id(provider)
@@ -288,6 +335,7 @@ class RegisterService:
         scope_aliases = {"failed": "retryable", "retryable": "retryable", "invalid": "invalid", "all": "all"}
         scope = scope_aliases.get(scope, "all")
         cleared = mail_provider.reset_outlook_token_pool_state(scope)
+        cleared += mail_provider.reset_outlook007_pool_state(scope)
         scope_label = {"retryable": "占用/临时失败", "invalid": "异常", "all": "全部"}[scope]
         with self._lock:
             self._append_log(

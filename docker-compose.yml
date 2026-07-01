@@ -1,6 +1,9 @@
 services:
   app:
-    image: ${CHATGPT2API_IMAGE:-ghcr.io/yukkcat/chatgpt2api:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${CHATGPT2API_IMAGE:-chatgpt2api:o7}
     container_name: chatgpt2api
     restart: unless-stopped
     ports:

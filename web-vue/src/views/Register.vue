@@ -626,6 +626,47 @@
                     </div>
                   </details>
                 </div>
+
+                <div v-if="providerType(provider) === 'outlook007'" class="register-provider-section register-provider-section--soft">
+                  <div class="register-provider-section-title">Outlook007 接码池</div>
+
+                  <label class="register-field">
+                    <span class="register-label">邮箱池导入</span>
+                    <textarea
+                      class="register-textarea register-textarea--tall"
+                      :disabled="registerConfig.enabled"
+                      :value="String(provider.mailboxes || '')"
+                      placeholder="每行一个：邮箱----接码链接"
+                      @input="updateProviderField(index, 'mailboxes', ($event.target as HTMLTextAreaElement).value)"
+                    ></textarea>
+                  </label>
+
+                  <div class="register-outlook-toolbar">
+                    <div class="register-outlook-summary">
+                      <MetaChip size="xs" tone="success">可用 {{ outlookPoolSummary(provider).available }}</MetaChip>
+                      <MetaChip size="xs" tone="muted">占用 {{ outlookPoolSummary(provider).inUse }}</MetaChip>
+                      <MetaChip size="xs" tone="muted">已用 {{ outlookPoolSummary(provider).used }}</MetaChip>
+                      <MetaChip size="xs" :tone="outlookPoolSummary(provider).retryable ? 'warning' : 'muted'">
+                        临时失败 {{ outlookPoolSummary(provider).retryable }}
+                      </MetaChip>
+                      <MetaChip v-if="outlookPoolSummary(provider).pending" size="xs" tone="info">
+                        待保存 {{ outlookPoolSummary(provider).pending }}
+                      </MetaChip>
+                    </div>
+
+                    <FloatingActionMenu
+                      label="更多维护"
+                      :items="outlookPoolActionItems"
+                      :disabled="registerConfig.enabled || legacySaving"
+                      align="right"
+                      placement="auto"
+                      :trigger-min-width="96"
+                      @select="handleOutlookPoolAction"
+                    />
+                  </div>
+
+                  <p class="register-preview-line">{{ outlook007PoolHint(provider) }}</p>
+                </div>
               </FormSection>
             </div>
           </FormSection>
@@ -784,6 +825,7 @@ const providerTypeOptions = [
   { value: 'yyds_mail', label: 'YYDS Mail' },
   { value: 'ddg_mail', label: 'DDG + CF 收件箱' },
   { value: 'outlook_token', label: 'Microsoft 邮箱凭据池' },
+  { value: 'outlook007', label: 'Outlook007 接码池' },
 ]
 const providerTypeGroups = [{ options: providerTypeOptions }]
 
@@ -825,9 +867,11 @@ const providerTypeKeys: Record<string, string[]> = {
   yyds_mail: ['api_base', 'api_key', 'domain', 'subdomain', 'wildcard'],
   ddg_mail: ['api_base', 'ddg_token', 'cf_inbox_jwt', 'admin_password', 'cf_api_key', 'cf_auth_mode', 'cf_create_path', 'cf_messages_path'],
   outlook_token: ['mailboxes', 'mode', 'imap_host', 'message_limit', 'alias_enabled', 'alias_per_email', 'alias_prefix', 'alias_include_original'],
+  outlook007: ['mailboxes'],
 }
 const providerLocalOnlyKeys: Record<string, string[]> = {
   outlook_token: ['mailboxes_count', 'mailboxes_base_count', 'mailboxes_alias_count', 'mailboxes_preview', 'mailboxes_stats', 'mailboxes_parse_stats'],
+  outlook007: ['mailboxes_count', 'mailboxes_base_count', 'mailboxes_alias_count', 'mailboxes_preview', 'mailboxes_stats', 'mailboxes_parse_stats'],
 }
 
 const registerProviders = computed(() => registerConfig.value?.mail.providers || [])
@@ -969,6 +1013,8 @@ function defaultProvider(type = 'cloudmail_gen'): RegisterProvider {
         alias_prefix: 'c2api',
         alias_include_original: true,
       }
+    case 'outlook007':
+      return { ...base, mailboxes: '' }
     default:
       return base
   }
@@ -1109,6 +1155,11 @@ function providerRequirementMessages(provider: RegisterProvider) {
       if (savedCount <= 0 && pendingOutlookCount(provider) <= 0) missing.push('Microsoft 邮箱凭据池')
       break
     }
+    case 'outlook007': {
+      const savedCount = Number(provider.mailboxes_count || 0)
+      if (savedCount <= 0 && pendingOutlookCount(provider) <= 0) missing.push('Outlook007 接码池')
+      break
+    }
     default:
       break
   }
@@ -1199,10 +1250,11 @@ function numeric(value: unknown) {
 }
 
 function pendingOutlookCount(provider: RegisterProvider) {
+  const minSegments = providerType(provider) === 'outlook007' ? 2 : 4
   return String(provider.mailboxes || '')
     .split(/\r?\n/)
     .map(line => line.trim())
-    .filter(line => line && line.split('----').length >= 4)
+    .filter(line => line && line.split('----').length >= minSegments)
     .length
 }
 
@@ -1269,6 +1321,15 @@ function outlookPoolHint(provider: RegisterProvider) {
   if (summary.retryable > 0 || summary.inUse > 0) return `有 ${summary.retryable} 个临时失败、${summary.inUse} 个占用，可在更多维护里释放后重试。`
   if (summary.available <= 0) return '库存已用完，请导入新的 Microsoft 邮箱材料。'
   return `已保存 ${summary.saved} 个 Microsoft 邮箱材料。`
+}
+
+function outlook007PoolHint(provider: RegisterProvider) {
+  const summary = outlookPoolSummary(provider)
+  if (summary.pending > 0) return `有 ${summary.pending} 个待保存，保存配置后进入 outlook007 接码池。`
+  if (summary.saved <= 0) return '还没有导入 outlook007 邮箱。'
+  if (summary.retryable > 0 || summary.inUse > 0) return `有 ${summary.retryable} 个临时失败、${summary.inUse} 个占用，可在更多维护里释放后重试。`
+  if (summary.available <= 0) return '库存已用完，请导入新的 outlook007 邮箱。'
+  return `已保存 ${summary.saved} 个 outlook007 邮箱。`
 }
 
 function gptMailState(index: number): GptMailStatusState {

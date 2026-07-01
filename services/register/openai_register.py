@@ -754,7 +754,7 @@ class PlatformRegistrar:
         return code == "invalid_state" or "sign-in session is no longer valid" in message
 
     def _passwordless_login(self, email: str, mailbox: dict, index: int) -> dict:
-        if str(mailbox.get("provider") or "") != "outlook_token":
+        if str(mailbox.get("provider") or "") not in {"outlook_token", "outlook007"}:
             raise RuntimeError("OpenAI 返回登录流，当前邮箱来源无法读取 Microsoft 登录验证码")
         step(index, "OpenAI 返回登录流，转入 Microsoft passwordless 登录", "yellow")
         for attempt in range(2):
