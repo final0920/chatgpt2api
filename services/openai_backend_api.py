@@ -446,6 +446,78 @@ class OpenAIBackendAPI:
             self._raise_on_error(response, path)
         return response.json()
 
+    def request_workspace_invite(self, workspace_id: str) -> Dict[str, Any]:
+        """向指定母号 workspace 申请加入。409=已是成员，视为成功。
+
+        参考 regist.py send_join：POST accounts/{ws}/invites/request，空 body，
+        走本客户端已建好的 Bearer + 代理 + 指纹 session。"""
+        workspace_id = str(workspace_id or "").strip()
+        if not workspace_id:
+            raise ValueError("workspace_id is required")
+        path = f"/backend-api/accounts/{workspace_id}/invites/request"
+        response = self.session.post(
+            self.base_url + path,
+            headers=self._headers(path, {"Content-Type": "application/json"}),
+            json={},
+            timeout=20,
+        )
+        if response.status_code == 409:
+            # 已是该 workspace 成员，视为加入成功
+            return {"already_member": True, "status": 409}
+        if response.status_code not in (200, 201, 204):
+            self._raise_on_error(response, path)
+        try:
+            body = response.json() if getattr(response, "text", "") else {}
+        except Exception:
+            body = {}
+        return body if isinstance(body, dict) else {"raw": body}
+
+    def verify_workspace_access(self, workspace_id: str = "") -> Dict[str, Any]:
+        """join 后调 accounts/check 选目标 workspace 的 account，再带 chatgpt-account-id
+        试访问 /me 确认可对话。返回 {account_id, plan_type, organization_id, me_ok}。
+        参考 regist.py verify_chat_access。"""
+        target_ws = str(workspace_id or "").strip()
+        path = "/backend-api/accounts/check/v4-2023-04-27"
+        response = self.session.get(
+            self.base_url + path + "?timezone_offset_min=-480",
+            headers=self._headers(path),
+            timeout=20,
+        )
+        if response.status_code != 200:
+            self._raise_on_error(response, path)
+        payload = response.json()
+        accounts = (payload.get("accounts") or {}) if isinstance(payload, dict) else {}
+
+        # 默认选 default，若能匹配目标 workspace(key 或 account_id 命中)则优先选它
+        selected = ((accounts.get("default") or {}).get("account") or {}) or {}
+        if target_ws:
+            for key, value in accounts.items():
+                account = (value or {}).get("account") or {}
+                if target_ws in (str(key), str(account.get("account_id") or "")):
+                    selected = account
+                    break
+
+        account_id = str(selected.get("account_id") or "")
+        plan_type = str(selected.get("plan_type") or "")
+        organization_id = str(selected.get("organization_id") or "")
+
+        me_ok = False
+        if account_id:
+            me_path = "/backend-api/me"
+            me_resp = self.session.get(
+                self.base_url + me_path,
+                headers=self._headers(me_path, {"chatgpt-account-id": account_id}),
+                timeout=20,
+            )
+            me_ok = me_resp.status_code == 200
+
+        return {
+            "account_id": account_id,
+            "plan_type": plan_type,
+            "organization_id": organization_id,
+            "me_ok": me_ok,
+        }
+
     def _get_default_account(self) -> Dict[str, Any]:
         path = "/backend-api/accounts/check/v4-2023-04-27"
         response = self.session.get(self.base_url + path + "?timezone_offset_min=-480", headers=self._headers(path),

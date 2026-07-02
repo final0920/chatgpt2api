@@ -73,6 +73,7 @@ SETTINGS_UPDATE_KEYS = {
     "backup",
     "chat_completion_cache",
     "third_party_apps",
+    "register_postprocess",
 }
 
 

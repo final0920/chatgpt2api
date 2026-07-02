@@ -947,6 +947,7 @@ class PlatformRegistrar:
             "refresh_token": str(tokens.get("refresh_token") or "").strip(),
             "id_token": str(tokens.get("id_token") or "").strip(),
             "source_type": source_type,
+            "mail_provider": str(mailbox.get("provider") or ""),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -963,6 +964,17 @@ def worker(index: int) -> dict:
         refresh_result = account_service.refresh_accounts([access_token])
         if refresh_result.get("errors"):
             step(index, f"账号已保存，刷新状态暂未成功，稍后可重试: {refresh_result['errors']}", "yellow")
+        # 注册后处理：仅 outlook007 渠道账号，自动 join 空间 + 转 sub2api + 推送(开关在系统设置基础设置)
+        if str(result.get("mail_provider") or "") == "outlook007":
+            try:
+                from services.register.postprocess import run_postprocess
+                pp = run_postprocess(result)
+                if pp.get("ok"):
+                    log(f'{result["email"]} 已推送 sub2api', "green")
+                elif not pp.get("skipped"):
+                    log(f'{result["email"]} 注册后处理未成功: {pp.get("reason")}', "yellow")
+            except Exception as e:
+                log(f'{result["email"]} 注册后处理异常: {e}', "yellow")
         with stats_lock:
             stats["done"] += 1
             stats["success"] += 1

@@ -383,6 +383,41 @@ def list_remote_groups(server: dict) -> list[dict]:
     return items
 
 
+def push_accounts_batch(server: dict, accounts: list[dict]) -> dict:
+    """把账号批量推送到 sub2api（管理端 BatchCreate）。
+
+    accounts 已是 sub2api 账号结构（name/platform/type/credentials/extra/... + 顶层 group_ids）。
+    复用 _auth_headers（api_key 优先），POST /api/v1/admin/accounts/batch，
+    返回 sub2api 剥信封后的 {success, failed, results}。"""
+    base_url = _clean(server.get("base_url"))
+    if not base_url:
+        raise RuntimeError("sub2api base_url is required")
+    if not accounts:
+        return {"success": 0, "failed": 0, "results": []}
+
+    # _auth_headers 只返回 Accept + 认证头，POST 需自己补 Content-Type
+    headers = {**_auth_headers(server), "Content-Type": "application/json"}
+
+    session = Session(verify=True)
+    try:
+        response = session.post(
+            f"{base_url.rstrip('/')}/api/v1/admin/accounts/batch",
+            headers=headers,
+            json={"accounts": accounts},
+            timeout=60,
+        )
+        if not response.ok:
+            raise RuntimeError(
+                f"sub2api push failed: HTTP {response.status_code} {response.text[:300]}"
+            )
+        payload = response.json()
+    finally:
+        session.close()
+
+    body = _unwrap_envelope(payload)
+    return body if isinstance(body, dict) else {"raw": body}
+
+
 def _fetch_access_token_for_account(server: dict, account_id: str) -> tuple[str, dict]:
     """Return (access_token, account_meta) for a single sub2api account id."""
     base_url = _clean(server.get("base_url"))

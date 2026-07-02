@@ -98,6 +98,17 @@ DEFAULT_THIRD_PARTY_APPS = {
     },
 }
 
+# outlook007 渠道注册成功后自动 join 空间 + 转 sub2api 格式 + 推送到 sub2api 的配置。
+# 放系统设置的基础设置里一处配齐；api_key 明文存 config.json（与 auth-key 同级，勿入库/commit）。
+DEFAULT_REGISTER_POSTPROCESS = {
+    "enabled": False,
+    "workspace_id": "631e1603-06cf-4f0b-b79b-d09fbfcfe98d",
+    "sub2api_base_url": "",
+    "sub2api_api_key": "",
+    "group_ids": [2],
+    "verify_chat_access": True,
+}
+
 
 def _normalize_bool(value: object, default: bool = False) -> bool:
     if isinstance(value, str):
@@ -300,6 +311,41 @@ def _normalize_third_party_apps_settings(value: object) -> dict[str, object]:
             "enabled": _normalize_bool(canvas_source.get("enabled"), False),
             "url": str(canvas_source.get("url") or DEFAULT_THIRD_PARTY_APPS["infinite_canvas"]["url"]).strip(),
         },
+    }
+
+
+def _normalize_group_ids(value: object) -> list[int]:
+    """归一化 sub2api 分组 id 列表：缺省回退默认 [2]，显式空列表则保留空。"""
+    if value in (None, ""):
+        items: object = DEFAULT_REGISTER_POSTPROCESS["group_ids"]
+    elif isinstance(value, (list, tuple)):
+        items = value
+    else:
+        items = [value]
+    normalized: list[int] = []
+    for item in items:  # type: ignore[assignment]
+        if isinstance(item, bool):
+            continue
+        try:
+            gid = int(item)
+        except (OverflowError, TypeError, ValueError):
+            continue
+        if gid > 0 and gid not in normalized:
+            normalized.append(gid)
+    return normalized
+
+
+def _normalize_register_postprocess_settings(value: object) -> dict[str, object]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "enabled": _normalize_bool(source.get("enabled"), False),
+        "workspace_id": str(
+            source.get("workspace_id") or DEFAULT_REGISTER_POSTPROCESS["workspace_id"]
+        ).strip(),
+        "sub2api_base_url": str(source.get("sub2api_base_url") or "").strip().rstrip("/"),
+        "sub2api_api_key": str(source.get("sub2api_api_key") or "").strip(),
+        "group_ids": _normalize_group_ids(source.get("group_ids")),
+        "verify_chat_access": _normalize_bool(source.get("verify_chat_access"), True),
     }
 
 
@@ -636,6 +682,7 @@ class ConfigStore:
             data["proxy_runtime"] = self.get_public_proxy_runtime_settings()
             data["fallback_proxy"] = self.get_proxy_fallback_settings()
             data["third_party_apps"] = self.get_third_party_apps_settings()
+            data["register_postprocess"] = self.get_register_postprocess_settings()
             data["basic"] = _legacy_basic_from_settings(data.get("basic"), data)
             data.pop("auth-key", None)
             return data
@@ -664,6 +711,9 @@ class ConfigStore:
     def get_third_party_apps_settings(self) -> dict[str, object]:
         return _normalize_third_party_apps_settings(self.data.get("third_party_apps"))
 
+    def get_register_postprocess_settings(self) -> dict[str, object]:
+        return _normalize_register_postprocess_settings(self.data.get("register_postprocess"))
+
     def update(self, data: dict[str, object]) -> dict[str, object]:
         with self._lock:
             self.reload_if_changed()
@@ -681,6 +731,10 @@ class ConfigStore:
                 )
             if "third_party_apps" in next_data:
                 next_data["third_party_apps"] = _normalize_third_party_apps_settings(next_data.get("third_party_apps"))
+            if "register_postprocess" in next_data:
+                next_data["register_postprocess"] = _normalize_register_postprocess_settings(
+                    next_data.get("register_postprocess")
+                )
             if "proxy_runtime" in next_data:
                 incoming_runtime = next_data.get("proxy_runtime")
                 if isinstance(incoming_runtime, dict):

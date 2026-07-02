@@ -189,6 +189,14 @@ export interface Settings {
       url: string
     }
   }
+  register_postprocess: {
+    enabled: boolean
+    workspace_id: string
+    sub2api_base_url: string
+    sub2api_api_key: string
+    group_ids: number[]
+    verify_chat_access: boolean
+  }
   proxy_profiles?: Array<{
     id: string
     name: string

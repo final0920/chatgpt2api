@@ -714,6 +714,47 @@
         </FormSection>
       </div>
 
+      <div v-else-if="activeSettingsTab === 'register-postprocess'" class="max-w-3xl">
+        <FormSection title="注册后自动入库 sub2api" subtitle="outlook007 渠道账号注册成功后，自动 join 空间 → 转 sub2api 格式 → 推送到 sub2api。">
+          <div class="settings-check-grid settings-check-grid--single">
+            <div class="settings-check-item">
+              <Checkbox v-model="localSettings.register_postprocess.enabled">启用注册后自动入库</Checkbox>
+            </div>
+            <div class="settings-check-item">
+              <Checkbox v-model="localSettings.register_postprocess.verify_chat_access">join 后验证可对话再推送</Checkbox>
+            </div>
+          </div>
+          <FormField label="空间 ID (workspace_id)">
+            <Input
+              v-model.trim="localSettings.register_postprocess.workspace_id"
+              block
+              placeholder="631e1603-06cf-4f0b-b79b-d09fbfcfe98d"
+            />
+          </FormField>
+          <FormField label="sub2api 地址">
+            <Input
+              v-model.trim="localSettings.register_postprocess.sub2api_base_url"
+              block
+              placeholder="http://15.204.89.156:8080"
+            />
+          </FormField>
+          <FormField label="sub2api API 密钥 (x-api-key)">
+            <Input
+              v-model.trim="localSettings.register_postprocess.sub2api_api_key"
+              block
+              placeholder="admin-xxxxxxxx"
+            />
+          </FormField>
+          <FormField label="分组 ID (group_ids，逗号分隔)">
+            <Input
+              v-model.trim="registerPostprocessGroupIdsText"
+              block
+              placeholder="2"
+            />
+          </FormField>
+        </FormSection>
+      </div>
+
       <div v-else-if="activeSettingsTab === 'api-docs'" class="space-y-4">
         <FormSection title="接口接入" subtitle="第三方应用按 OpenAI 兼容接口接入，使用同一套 Bearer 鉴权。">
           <div class="grid gap-3 md:grid-cols-2">
@@ -1221,6 +1262,18 @@ let hasActivatedOnce = false
 
 const externalSourcesLoading = computed(() => cpaLoading.value || sub2apiLoading.value)
 
+const registerPostprocessGroupIdsText = computed<string>({
+  get: () => (localSettings.value?.register_postprocess?.group_ids || []).join(', '),
+  set: (val: string) => {
+    if (!localSettings.value) return
+    const ids = String(val)
+      .split(',')
+      .map((item) => Number(item.trim()))
+      .filter((item) => Number.isInteger(item) && item > 0)
+    localSettings.value.register_postprocess.group_ids = ids
+  },
+})
+
 const settingsTabs = [
   { value: 'basic', label: '基础配置' },
   { value: 'image-errors', label: '图片错误' },
@@ -1229,6 +1282,7 @@ const settingsTabs = [
   { value: 'keys', label: '用户密钥' },
   { value: 'api-docs', label: '接口接入' },
   { value: 'canvas', label: '画布入口' },
+  { value: 'register-postprocess', label: '注册入库' },
   { value: 'cpa', label: 'CPA' },
   { value: 'sub2api', label: 'Sub2API' },
 ]

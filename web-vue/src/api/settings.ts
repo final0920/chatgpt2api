@@ -97,6 +97,7 @@ const SETTINGS_SAVE_KEYS = [
   'backup',
   'chat_completion_cache',
   'third_party_apps',
+  'register_postprocess',
 ] as const
 
 function cleanString(value: unknown): string {
@@ -139,6 +140,23 @@ export function normalizeThirdPartyApps(raw: unknown): ThirdPartyAppsSettings {
       enabled: boolValue(infiniteCanvas.enabled, false),
       url: cleanString(infiniteCanvas.url) || 'https://canvas.best',
     },
+  }
+}
+
+export function normalizeRegisterPostprocess(raw: unknown): Settings['register_postprocess'] {
+  const source = raw && typeof raw === 'object' ? raw as RawSettings : {}
+  const groupIds = Array.isArray(source.group_ids)
+    ? source.group_ids
+      .map((item) => Number(item))
+      .filter((item) => Number.isInteger(item) && item > 0)
+    : [2]
+  return {
+    enabled: boolValue(source.enabled, false),
+    workspace_id: cleanString(source.workspace_id) || '631e1603-06cf-4f0b-b79b-d09fbfcfe98d',
+    sub2api_base_url: cleanString(source.sub2api_base_url),
+    sub2api_api_key: cleanString(source.sub2api_api_key),
+    group_ids: groupIds,
+    verify_chat_access: boolValue(source.verify_chat_access, true),
   }
 }
 
@@ -315,6 +333,7 @@ export function normalizeSettings(raw: RawSettings | null | undefined): Settings
         url: thirdPartyApps.infinite_canvas.url,
       },
     },
+    register_postprocess: normalizeRegisterPostprocess(source.register_postprocess),
     proxy_profiles: Array.isArray(source.proxy_profiles) ? source.proxy_profiles : [],
   } as Settings
 
@@ -359,6 +378,7 @@ function toBackendSettings(settings: Settings): RawSettings {
     backup: cloneRawSettings(normalized.backup),
     chat_completion_cache: cloneRawSettings(normalized.chat_completion_cache),
     third_party_apps: cloneRawSettings(normalized.third_party_apps),
+    register_postprocess: cloneRawSettings(normalized.register_postprocess),
   }
   payload.image_retention_days = numberValue(
     normalized.image_retention_days,
