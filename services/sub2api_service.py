@@ -328,6 +328,67 @@ def list_remote_accounts(server: dict) -> list[dict]:
     return items
 
 
+def list_group_accounts(server: dict) -> list[dict]:
+    """巡检专用：列出某分组下的账号，仅取 id/email/name/status，不涉及 token。
+
+    与 list_remote_accounts 的区别：不做 access_token 过滤。sub2api 的 admin 列表
+    接口出于安全本就不下发 token 明文（只给 credentials_status 布尔标记），巡检也
+    只需按 status 判断删除、按 email 比对号池，令牌来自 ChatGPT2API 重授权，因此这里
+    保留分组内全部账号，避免把无明文 token 的账号误滤掉。"""
+    base_url = _clean(server.get("base_url"))
+    if not base_url:
+        return []
+
+    headers = _auth_headers(server)
+    group_id = _clean(server.get("group_id"))
+
+    session = Session(verify=True)
+    items: list[dict] = []
+    try:
+        page = 1
+        while True:
+            params: dict[str, object] = {
+                "platform": "openai",
+                "type": "oauth",
+                "page": page,
+                "page_size": 200,
+            }
+            if group_id:
+                params["group"] = group_id
+            response = session.get(
+                f"{base_url.rstrip('/')}/api/v1/admin/accounts",
+                headers=headers,
+                params=params,
+                timeout=60,
+            )
+            if not response.ok:
+                raise RuntimeError(f"sub2api list failed: HTTP {response.status_code} {response.text[:200]}")
+
+            data, total = _extract_paged_items(response.json())
+            if not data:
+                break
+
+            for account in data:
+                if not isinstance(account, dict):
+                    continue
+                credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
+                account_id = account.get("id")
+                items.append({
+                    "id": str(account_id) if account_id is not None else "",
+                    "name": _clean(account.get("name")),
+                    "email": _clean(credentials.get("email")) or _clean(account.get("name")),
+                    "status": _clean(account.get("status")),
+                })
+
+            if page * 200 >= total or len(data) < 200:
+                break
+            page += 1
+    finally:
+        session.close()
+
+    return items
+
+
 def list_remote_groups(server: dict) -> list[dict]:
     """Return OpenAI account groups from a sub2api server."""
     base_url = _clean(server.get("base_url"))

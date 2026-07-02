@@ -123,8 +123,8 @@ class InspectService:
         server = {"base_url": base_url, "api_key": api_key, "group_id": group_id}
         self._append_log(f"巡检开始：sub2api group={group_id}，空间={workspace_id}", "green")
 
-        # 拉取该分组账号
-        remote = sub2api_service.list_remote_accounts(server)
+        # 拉取该分组账号（巡检只需 status/email/id，不涉及 sub2api token）
+        remote = sub2api_service.list_group_accounts(server)
         self._append_log(f"拉取 sub2api group {group_id} 账号：共 {len(remote)} 个", "info")
         self._bump(total=len(remote))
 
