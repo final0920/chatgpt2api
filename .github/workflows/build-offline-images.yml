@@ -1,0 +1,41 @@
+name: build-offline-images
+
+# 手动触发：Actions 页面点 "Run workflow"，或用 API/gh 触发
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.arch }} offline image tar
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          tags: chatgpt2api:o7
+          outputs: type=docker,dest=./chatgpt2api-o7-${{ matrix.arch }}.tar
+
+      - name: Show tar size
+        run: ls -lh ./chatgpt2api-o7-${{ matrix.arch }}.tar
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt2api-o7-${{ matrix.arch }}
+          path: ./chatgpt2api-o7-${{ matrix.arch }}.tar
+          retention-days: 14
+          compression-level: 0
