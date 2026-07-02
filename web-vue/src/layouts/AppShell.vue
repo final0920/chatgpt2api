@@ -629,6 +629,11 @@ const menuItems = [
     icon: 'M7 3h10a2 2 0 0 1 2 2v3h-2V5H7v14h10v-3h2v3a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm8.6 5.4L20.2 13l-4.6 4.6-1.4-1.4 2.2-2.2H9v-2h7.4l-2.2-2.2 1.4-1.4z',
   },
   {
+    path: '/inspect',
+    label: '账号巡检',
+    icon: 'M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z',
+  },
+  {
     path: '/logs',
     label: '日志管理',
     icon: 'M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h10v2H4v-2z',
@@ -665,6 +670,7 @@ const routeTitleMap: Record<string, string> = {
   gallery: '图片管理',
   proxy: '代理管理',
   register: '注册账号',
+  inspect: '账号巡检',
   settings: '系统设置',
   debug: '调试中心',
   monitor: '实时监控',
@@ -777,6 +783,7 @@ const routeViewLoaders: Record<string, () => Promise<unknown>> = {
   '/proxy': () => import('@/views/Proxy.vue'),
   '/settings': () => import('@/views/Settings.vue'),
   '/register': () => import('@/views/Register.vue'),
+  '/inspect': () => import('@/views/Inspect.vue'),
   '/debug': () => import('@/views/DebugCenter.vue'),
   '/studio': () => import('@/views/Studio.vue'),
   '/image-tasks': () => import('@/views/ImageTasks.vue'),

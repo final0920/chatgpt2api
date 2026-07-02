@@ -418,6 +418,33 @@ def push_accounts_batch(server: dict, accounts: list[dict]) -> dict:
     return body if isinstance(body, dict) else {"raw": body}
 
 
+def delete_account(server: dict, account_id: str) -> bool:
+    """删除 sub2api 上的一个账号（DELETE /api/v1/admin/accounts/{id}）。复用 _auth_headers。"""
+    base_url = _clean(server.get("base_url"))
+    if not base_url:
+        raise RuntimeError("sub2api base_url is required")
+    account_id = _clean(account_id)
+    if not account_id:
+        raise RuntimeError("account_id is required")
+
+    headers = _auth_headers(server)
+    session = Session(verify=True)
+    try:
+        response = session.delete(
+            f"{base_url.rstrip('/')}/api/v1/admin/accounts/{account_id}",
+            headers=headers,
+            timeout=30,
+        )
+        # 404 视为已不存在(幂等成功)
+        if response.status_code == 404:
+            return True
+        if not response.ok:
+            raise RuntimeError(f"sub2api delete failed: HTTP {response.status_code} {response.text[:200]}")
+    finally:
+        session.close()
+    return True
+
+
 def _fetch_access_token_for_account(server: dict, account_id: str) -> tuple[str, dict]:
     """Return (access_token, account_meta) for a single sub2api account id."""
     base_url = _clean(server.get("base_url"))

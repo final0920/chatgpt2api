@@ -62,6 +62,12 @@ const router = createRouter({
           meta: { keepAlive: false, adminOnly: true },
         },
         {
+          path: 'inspect',
+          name: 'inspect',
+          component: () => import('@/views/Inspect.vue'),
+          meta: { keepAlive: false, adminOnly: true },
+        },
+        {
           path: 'logs',
           name: 'logs',
           component: () => import('@/views/Logs.vue'),
