@@ -156,10 +156,8 @@ class AccountRefreshTokenRequest(BaseModel):
 
 
 class AccountReauthorizeRequest(BaseModel):
-    """重新授权后原地替换目标账号：换出的新 token 覆盖回同一账号。"""
-    session_id: str = ""
-    callback: str = ""
-    target_access_token: str = ""
+    """重新授权：用账号邮箱走 passwordless 自动重登，原地替换该账号。"""
+    access_token: str = ""
 
 
 def _account_payload_token(item: dict[str, Any]) -> str:
@@ -769,30 +767,35 @@ def create_router() -> APIRouter:
             body: AccountReauthorizeRequest,
             authorization: str | None = Header(default=None),
     ):
-        """重新授权：换出新 token 三件套后，原地替换指定异常账号。
+        """自动重新授权异常账号：用其邮箱走 passwordless 登录换新 token，原地替换。
 
-        复用 /api/accounts/oauth/start 起始的 PKCE 会话；这里的 finish 不新增
-        账号，而是把新 token 覆盖回 target_access_token 指向的旧账号，保留其
-        渠道(source_type)/分组(group_id)/邮箱等元数据，并清除 401 异常状态。
+        全自动、无需人工：从 outlook007 接码池按账号邮箱找回收码入口，复用注册的
+        Microsoft passwordless 登录链路换出新 at/rt/id_token，再覆盖回同一账号，
+        保留渠道(source_type)/分组(group_id)/邮箱等元数据并清除 401 异常状态。
         """
         require_admin(authorization)
-        target = str(body.target_access_token or "").strip()
-        if not target:
-            raise HTTPException(status_code=400, detail={"error": "target_access_token is required"})
-        resolved = account_service.resolve_access_token(target) or target
-        if account_service.get_account(resolved) is None:
-            raise HTTPException(status_code=404, detail={"error": "target account not found"})
+        access_token = str(body.access_token or "").strip()
+        if not access_token:
+            raise HTTPException(status_code=400, detail={"error": "access_token is required"})
+        resolved = account_service.resolve_access_token(access_token) or access_token
+        account = account_service.get_account(resolved)
+        if account is None:
+            raise HTTPException(status_code=404, detail={"error": "account not found"})
+        email = str(account.get("email") or "").strip()
+        if not email:
+            raise HTTPException(status_code=400, detail={"error": "该账号没有记录邮箱，无法自动重新授权"})
         try:
-            tokens = await run_in_threadpool(oauth_login_service.finish, body.session_id, body.callback)
-        except OAuthLoginError as exc:
-            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+            from services.register import openai_register
+            tokens = await run_in_threadpool(openai_register.reauthorize_login, email)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail={"error": f"重新授权失败：{exc}"}) from exc
         try:
-            account = await run_in_threadpool(
+            updated = await run_in_threadpool(
                 account_service.reauthorize_account, resolved, tokens, "reauthorize"
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-        return {"item": account, "items": account_service.list_accounts()}
+        return {"item": updated, "items": account_service.list_accounts()}
 
     @router.get("/api/cpa/pools")
     async def list_cpa_pools(authorization: str | None = Header(default=None)):

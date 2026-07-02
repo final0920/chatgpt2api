@@ -978,3 +978,60 @@ def worker(index: int) -> dict:
         return {"ok": False, "index": index, "error": str(e)}
     finally:
         registrar.close()
+
+
+def _find_readable_mailbox_for_email(email: str) -> dict | None:
+    """从 outlook007 邮箱池按 email 找回可读邮箱，构造 mailbox（含接码链接）。
+
+    只有 outlook007 这类接码邮箱能读取 Microsoft 登录验证码（对应 _passwordless_login
+    的 provider 白名单）。用 mail_provider._entries 生成的 provider_ref，保证后续
+    wait_for_code 能按 ref 定位到池——即使该 provider 未 enable 也可（_create_provider
+    按 provider_ref 从全部 entries 匹配，不过滤 enable）。
+    """
+    email_l = str(email or "").strip().lower()
+    if not email_l:
+        return None
+    for entry in mail_provider._entries(_mail_config()):
+        if str(entry.get("type") or "") != "outlook007":
+            continue
+        provider_ref = str(entry.get("provider_ref") or "")
+        for cred in mail_provider.parse_outlook007_pool(str(entry.get("mailboxes") or "")):
+            if str(cred.get("email") or "").strip().lower() == email_l:
+                return {
+                    "provider": "outlook007",
+                    "provider_ref": provider_ref,
+                    "address": cred["email"],
+                    "login_email": cred["email"],
+                    "alias_of": "",
+                    "code_api_url": cred["code_api_url"],
+                }
+    return None
+
+
+def reauthorize_login(email: str, proxy: str | None = None, index: int = 0) -> dict:
+    """用已有账号邮箱走 passwordless 自动重新登录授权，返回新 token 三件套。
+
+    面向"异常 401 账号重新授权"：从 outlook007 接码池找回该 email 的收码入口，复用注册时的
+    Microsoft passwordless 登录链路（authorize -> 自动收 OTP -> 换 token），拿到全新的
+    access_token / refresh_token / id_token（client_id 与号池刷新一致，落盘后可正常自动刷新）。
+    """
+    address = str(email or "").strip()
+    if not address:
+        raise RuntimeError("账号缺少邮箱，无法自动重新授权")
+    mailbox = _find_readable_mailbox_for_email(address)
+    if mailbox is None:
+        raise RuntimeError(f"邮箱 {address} 不在 outlook007 接码池，无法自动重新授权（请确认该邮箱已导入邮箱池）")
+    registrar = PlatformRegistrar(proxy if proxy is not None else config["proxy"])
+    try:
+        registrar._platform_authorize(address, index, screen_hint="login_or_signup")
+        tokens = registrar._passwordless_login(address, mailbox, index)
+        access_token = str(tokens.get("access_token") or "").strip()
+        if not access_token:
+            raise RuntimeError("重新授权未换到 access_token")
+        return {
+            "access_token": access_token,
+            "refresh_token": str(tokens.get("refresh_token") or "").strip(),
+            "id_token": str(tokens.get("id_token") or "").strip(),
+        }
+    finally:
+        registrar.close()

@@ -749,22 +749,12 @@ export const accountsApi = {
     >('/api/accounts/refresh-token', { access_token: resolveToken(accountId) })
   },
 
-  startReauthorize: async (emailHint = '') => {
-    return apiClient.post<
-      { email_hint: string },
-      { session_id: string; authorize_url: string; expires_in?: number; redirect_uri_prefix?: string }
-    >('/api/accounts/oauth/start', { email_hint: emailHint })
-  },
-
-  finishReauthorize: async (accountId: string, sessionId: string, callback: string) => {
-    return apiClient.post<
-      { session_id: string; callback: string; target_access_token: string },
-      { item?: Account; items?: Account[] }
-    >('/api/accounts/oauth/reauthorize', {
-      session_id: sessionId,
-      callback,
-      target_access_token: resolveToken(accountId),
-    })
+  reauthorizeAccount: async (accountId: string) => {
+    return apiClient.post<{ access_token: string }, { item?: Account; items?: Account[] }>(
+      '/api/accounts/oauth/reauthorize',
+      { access_token: resolveToken(accountId) },
+      { timeout: 180000 },
+    )
   },
 
   refreshAccountsWithProgress: (

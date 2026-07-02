@@ -194,6 +194,7 @@
                   :item="item"
                   :refreshing="refreshingAccountId === item.id"
                   :refreshing-oauth="refreshingOAuthAccountId === item.id"
+                  :reauthorizing="reauthorizingAccountId === item.id"
                   :resetting="resettingAccountId === item.id"
                   align="end"
                   @edit="openEditModal(item)"
@@ -280,6 +281,7 @@
             :item="item"
             :refreshing="refreshingAccountId === item.id"
             :refreshing-oauth="refreshingOAuthAccountId === item.id"
+            :reauthorizing="reauthorizingAccountId === item.id"
             :resetting="resettingAccountId === item.id"
             @edit="openEditModal(item)"
             @toggle-enabled="toggleEnabled(item)"
@@ -849,6 +851,7 @@ const {
   viewMode,
   refreshingAccountId,
   refreshingOAuthAccountId,
+  reauthorizingAccountId,
   resettingAccountId,
   importBusy,
   exportBusy,

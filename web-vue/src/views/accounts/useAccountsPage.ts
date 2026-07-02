@@ -217,6 +217,7 @@ export function useAccountsPage() {
   const viewMode = ref<AccountsViewMode>('list')
   const refreshingAccountId = ref('')
   const refreshingOAuthAccountId = ref('')
+  const reauthorizingAccountId = ref('')
   const resettingAccountId = ref('')
   const importBusy = ref(false)
   const exportBusy = ref(false)
@@ -1514,38 +1515,25 @@ export function useAccountsPage() {
   }
 
   async function reauthorizeAccount(item: Account) {
-    const channel = item.source_type || 'web'
     const confirmed = await confirmDialog.ask({
       title: '重新授权账号',
-      message: `即将为账号 ${item.id}（${item.email || '未知邮箱'}，渠道：${channel}）重新授权。\n\n步骤：确认后会自动打开 OpenAI 登录页，请用该账号登录；登录完成后浏览器会跳转到一个 callback 地址（可能提示无法访问，属正常），把浏览器地址栏的完整 URL 复制回来粘贴即可。\n\n换出的新令牌会「原地替换」该账号（保留渠道/分组），是否继续？`,
-      confirmText: '开始授权',
+      message: `即将为账号 ${item.id}（${item.email || '未知邮箱'}）自动重新登录授权：用该邮箱的接码渠道自动收取验证码登录，换取新令牌并原地替换（保留渠道/分组），用于修复 401 异常。\n\n这会重新走一次 OpenAI 登录流程，可能耗时数十秒，期间请勿重复点击。是否继续？`,
+      confirmText: '开始重新授权',
       cancelText: '取消',
     })
     if (!confirmed) return
 
+    reauthorizingAccountId.value = item.id
+    toast.info(`正在为账号 ${item.id} 自动重新授权（收取验证码登录中，请稍候数十秒）...`)
     try {
-      const start = await accountsApi.startReauthorize(item.email || '')
-      const authorizeUrl = String(start?.authorize_url || '').trim()
-      const sessionId = String(start?.session_id || '').trim()
-      if (!authorizeUrl || !sessionId) {
-        throw new Error('未能创建授权会话，请重试')
-      }
-      window.open(authorizeUrl, '_blank', 'noopener')
-      const callback = window.prompt(
-        `请在新打开的页面用账号 ${item.email || item.id} 登录。\n登录后浏览器会跳转到 callback 地址（可能显示无法访问，属正常现象）。\n\n请把该地址栏的完整 URL 粘贴到这里：`,
-        '',
-      )
-      if (callback === null || !callback.trim()) {
-        toast.info('已取消重新授权')
-        return
-      }
-      toast.info(`正在为账号 ${item.id} 完成授权并替换令牌...`)
-      await accountsApi.finishReauthorize(item.id, sessionId, callback.trim())
-      toast.success(`账号 ${item.id} 已重新授权，令牌已原地替换`)
+      await accountsApi.reauthorizeAccount(item.id)
+      toast.success(`账号 ${item.id} 已重新授权，令牌已更新`)
       await loadData({ silentErrorToast: true })
     } catch (error) {
       toast.error(`账号 ${item.id} 重新授权失败：${normalizeErrorMessage(error)}`)
       await loadData({ silentErrorToast: true })
+    } finally {
+      reauthorizingAccountId.value = ''
     }
   }
 
@@ -1923,6 +1911,7 @@ export function useAccountsPage() {
     viewMode,
     refreshingAccountId,
     refreshingOAuthAccountId,
+    reauthorizingAccountId,
     resettingAccountId,
     importBusy,
     exportBusy,

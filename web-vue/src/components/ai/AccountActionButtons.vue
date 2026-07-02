@@ -34,11 +34,13 @@ const props = withDefaults(defineProps<{
   item: Account
   refreshing?: boolean
   refreshingOauth?: boolean
+  reauthorizing?: boolean
   resetting?: boolean
   align?: 'start' | 'end'
 }>(), {
   refreshing: false,
   refreshingOauth: false,
+  reauthorizing: false,
   resetting: false,
   align: 'start',
 })
@@ -71,7 +73,8 @@ const menuItems = computed<ActionMenuItem[]>(() => actionMenuGroups(
     },
     {
       key: 'reauthorize',
-      label: '重新授权',
+      label: props.reauthorizing ? '重新授权中...' : '重新授权',
+      disabled: props.reauthorizing,
     },
     {
       key: 'reset-state',
