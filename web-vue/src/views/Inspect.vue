@@ -15,10 +15,25 @@
 
       <SurfaceBox density="compact">
         <div class="inspect-toolbar">
-          <Checkbox :model-value="running" :disabled="toggling" @update:model-value="toggleInspect">
-            {{ running ? '巡检运行中（取消勾选可停止）' : '开启巡检' }}
-          </Checkbox>
+          <div class="inspect-controls">
+            <Checkbox :model-value="running" :disabled="toggling" @update:model-value="toggleInspect">
+              {{ running ? '巡检运行中（取消勾选可停止）' : '开启巡检' }}
+            </Checkbox>
+            <label class="inspect-threads">
+              线程
+              <input
+                class="inspect-threads-input"
+                type="number"
+                min="1"
+                max="10"
+                :value="threads"
+                :disabled="running || toggling"
+                @input="onThreadsInput"
+              />
+            </label>
+          </div>
           <div class="inspect-stats">
+            <span>第 {{ stats.round }} 轮</span>
             <span>共 {{ stats.total }}</span>
             <span>删除 {{ stats.deleted }}</span>
             <span>命中 {{ stats.matched }}</span>
@@ -26,6 +41,12 @@
             <span>失败 {{ stats.failed }}</span>
             <span>跳过 {{ stats.skipped }}</span>
           </div>
+        </div>
+        <div class="inspect-summary">
+          <span>已完成 {{ stats.rounds_done }} 轮</span>
+          <span>累计删除 {{ stats.total_deleted }}</span>
+          <span>累计更新 {{ stats.total_synced }}</span>
+          <span>累计失败 {{ stats.total_failed }}</span>
         </div>
       </SurfaceBox>
 
@@ -52,18 +73,30 @@ import { useToast } from '@/composables/useToast'
 const toast = useToast()
 const inspectState = ref<InspectState | null>(null)
 const toggling = ref(false)
+const threads = ref(3)
 const eventSource = ref<EventSource | null>(null)
 const pollTimer = ref<number | null>(null)
 
 const running = computed(() => Boolean(inspectState.value?.enabled || inspectState.value?.stats?.running))
 const stats = computed(() => ({
+  round: inspectState.value?.stats?.round ?? 0,
   total: inspectState.value?.stats?.total ?? 0,
   deleted: inspectState.value?.stats?.deleted ?? 0,
   matched: inspectState.value?.stats?.matched ?? 0,
   synced: inspectState.value?.stats?.synced ?? 0,
   failed: inspectState.value?.stats?.failed ?? 0,
   skipped: inspectState.value?.stats?.skipped ?? 0,
+  rounds_done: inspectState.value?.stats?.rounds_done ?? 0,
+  total_deleted: inspectState.value?.stats?.total_deleted ?? 0,
+  total_synced: inspectState.value?.stats?.total_synced ?? 0,
+  total_failed: inspectState.value?.stats?.total_failed ?? 0,
 }))
+
+function onThreadsInput(event: Event) {
+  const raw = Number((event.target as HTMLInputElement).value)
+  if (Number.isNaN(raw)) return
+  threads.value = Math.max(1, Math.min(10, Math.trunc(raw)))
+}
 
 function normalizeLogLevel(level?: string) {
   if (level === 'red' || level === 'error') return 'error'
@@ -107,7 +140,7 @@ async function toggleInspect(next: boolean) {
   toggling.value = true
   try {
     if (next) {
-      const res = await inspectApi.start()
+      const res = await inspectApi.start(threads.value)
       applyState(res.inspect)
       toast.success('巡检已启动')
       startLiveUpdates()
@@ -192,10 +225,51 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
+.inspect-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+
+.inspect-threads {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted-foreground, #8b8b8b);
+}
+
+.inspect-threads-input {
+  width: 56px;
+  padding: 4px 8px;
+  border: 1px solid var(--border, #d4d4d4);
+  border-radius: 6px;
+  background: var(--background, #fff);
+  color: inherit;
+  font-size: 12px;
+}
+
+.inspect-threads-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .inspect-stats {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
+  font-size: 12px;
+  color: var(--muted-foreground, #8b8b8b);
+}
+
+.inspect-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border, #ebebeb);
   font-size: 12px;
   color: var(--muted-foreground, #8b8b8b);
 }

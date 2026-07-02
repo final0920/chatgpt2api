@@ -11,13 +11,20 @@
 from __future__ import annotations
 
 import threading
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from services.account_service import account_service
 from services.config import config
 from services import sub2api_service
 from utils.log import logger
 from utils.timezone import beijing_now_str as _now
+
+ROUND_INTERVAL_SECONDS = 10
+MIN_THREADS = 1
+MAX_THREADS = 10
+DEFAULT_THREADS = 3
 
 
 class InspectService:
@@ -32,8 +39,9 @@ class InspectService:
     def _empty_stats() -> dict:
         return {
             "job_id": "", "running": False,
-            "total": 0, "deleted": 0, "matched": 0,
-            "synced": 0, "failed": 0, "skipped": 0,
+            "round": 0, "threads": DEFAULT_THREADS,
+            "total": 0, "deleted": 0, "matched": 0, "synced": 0, "failed": 0, "skipped": 0,
+            "rounds_done": 0, "total_deleted": 0, "total_synced": 0, "total_failed": 0,
             "started_at": "", "updated_at": "", "finished_at": "",
         }
 
@@ -55,18 +63,25 @@ class InspectService:
             self._stats.update(updates)
             self._stats["updated_at"] = _now()
 
-    def start(self) -> dict:
+    def start(self, threads: int = DEFAULT_THREADS) -> dict:
         with self._lock:
             if self._runner and self._runner.is_alive():
                 return self.get()
+            try:
+                threads = int(threads)
+            except (TypeError, ValueError):
+                threads = DEFAULT_THREADS
+            threads = max(MIN_THREADS, min(threads, MAX_THREADS))
             self._enabled = True
             self._logs = []
             self._stats = self._empty_stats()
             self._stats["job_id"] = uuid.uuid4().hex
             self._stats["running"] = True
+            self._stats["threads"] = threads
             self._stats["started_at"] = _now()
             self._stats["updated_at"] = _now()
-            self._runner = threading.Thread(target=self._run, daemon=True, name="account-inspect")
+            self._runner = threading.Thread(
+                target=self._run, args=(threads,), daemon=True, name="account-inspect")
             self._runner.start()
             return self.get()
 
@@ -76,9 +91,44 @@ class InspectService:
             self._append_log("已请求停止巡检，正在结束当前账号处理", "yellow")
             return self.get()
 
-    def _run(self) -> None:
+    def _interruptible_sleep(self, secs: int) -> None:
+        for _ in range(max(0, int(secs))):
+            if not self._enabled:
+                return
+            time.sleep(1)
+
+    def _reset_round(self, round_no: int) -> None:
+        with self._lock:
+            self._stats["round"] = round_no
+            self._stats["total"] = 0
+            self._stats["deleted"] = 0
+            self._stats["matched"] = 0
+            self._stats["synced"] = 0
+            self._stats["failed"] = 0
+            self._stats["skipped"] = 0
+            self._stats["updated_at"] = _now()
+
+    def _run(self, threads: int) -> None:
+        round_no = 0
         try:
-            self._do_inspect()
+            while self._enabled:
+                round_no += 1
+                self._reset_round(round_no)
+                self._append_log(
+                    f"========== 第 {round_no} 轮巡检开始（线程 {threads}）==========", "green")
+                self._do_inspect(threads)
+                with self._lock:
+                    self._stats["rounds_done"] = round_no
+                    td = self._stats.get("total_deleted", 0)
+                    ts = self._stats.get("total_synced", 0)
+                    tf = self._stats.get("total_failed", 0)
+                    self._stats["updated_at"] = _now()
+                if not self._enabled:
+                    break
+                self._append_log(
+                    f"第 {round_no} 轮结束（累计 删{td} 推{ts} 败{tf}），{ROUND_INTERVAL_SECONDS}s 后开始下一轮",
+                    "info")
+                self._interruptible_sleep(ROUND_INTERVAL_SECONDS)
         except Exception as exc:
             self._append_log(f"巡检异常终止: {type(exc).__name__}: {exc}", "red")
             logger.debug({"event": "inspect_run_error", "error": repr(exc)})
@@ -88,23 +138,9 @@ class InspectService:
                 self._stats["running"] = False
                 self._stats["finished_at"] = _now()
                 self._stats["updated_at"] = _now()
+            self._append_log(f"巡检已停止（共完成 {round_no} 轮）", "yellow")
 
-    def _build_local_email_index(self) -> dict[str, str]:
-        """{email(lower): access_token}，用于判断 sub2api 账号是否在 ChatGPT2API 号池。"""
-        index: dict[str, str] = {}
-        for acc in account_service.list_accounts():
-            email = str(acc.get("email") or "").strip().lower()
-            token = str(acc.get("access_token") or "")
-            if email and token:
-                index.setdefault(email, token)
-        return index
-
-    def _do_inspect(self) -> None:
-        # 延迟 import，避免潜在循环依赖
-        from services.register import openai_register
-        from services.openai_backend_api import OpenAIBackendAPI
-        from services.register.postprocess import build_sub2api_account
-
+    def _do_inspect(self, threads: int) -> None:
         settings = config.get_register_postprocess_settings()
         base_url = str(settings.get("sub2api_base_url") or "").strip()
         api_key = str(settings.get("sub2api_api_key") or "").strip()
@@ -121,52 +157,98 @@ class InspectService:
             return
 
         server = {"base_url": base_url, "api_key": api_key, "group_id": group_id}
-        self._append_log(f"巡检开始：sub2api group={group_id}，空间={workspace_id}", "green")
 
-        # 拉取该分组账号（巡检只需 status/email/id，不涉及 sub2api token）
         remote = sub2api_service.list_group_accounts(server)
         self._append_log(f"拉取 sub2api group {group_id} 账号：共 {len(remote)} 个", "info")
         self._bump(total=len(remote))
 
-        # 阶段1：删除状态为 error 的账号
         err_accounts = [a for a in remote if str(a.get("status")) == "error"]
-        self._append_log(f"[阶段1] 待删除错误账号：{len(err_accounts)} 个", "info")
+        self._append_log(f"[阶段1] 待删除错误账号：{len(err_accounts)} 个（线程 {threads}）", "info")
+        self._run_stage1(server, err_accounts, threads)
+        if not self._enabled:
+            return
+
+        ok_emails = {
+            str(a.get("email") or "").strip().lower()
+            for a in remote
+            if str(a.get("status")) != "error" and str(a.get("email") or "").strip()
+        }
+        local_accounts = account_service.list_accounts()
+        to_sync = []
+        for acc in local_accounts:
+            email = str(acc.get("email") or "").strip()
+            token = str(acc.get("access_token") or "").strip()
+            if not email or not token:
+                continue
+            if email.lower() in ok_emails:
+                continue
+            to_sync.append(acc)
+        skipped = len(local_accounts) - len(to_sync)
+        self._bump(matched=len(to_sync), skipped=skipped)
+        self._append_log(
+            f"[阶段2] ChatGPT2API 号池 {len(local_accounts)} 个：需补推 {len(to_sync)} 个，"
+            f"跳过(sub2api 已有) {skipped} 个（线程 {threads}）",
+            "info")
+        self._run_stage2(server, to_sync, workspace_id, group_ids, do_verify, threads)
+
+        with self._lock:
+            deleted = self._stats.get("deleted", 0)
+            synced = self._stats.get("synced", 0)
+            failed = self._stats.get("failed", 0)
+        self._append_log(
+            f"本轮完成：删除 {deleted}，更新 {synced}，失败 {failed}，跳过 {skipped}", "green")
+
+    def _run_stage1(self, server: dict, err_accounts: list, threads: int) -> None:
+        if not err_accounts:
+            return
         deleted = 0
-        for a in err_accounts:
+
+        def _del_one(a: dict):
             if not self._enabled:
-                self._append_log("已停止", "yellow")
-                return
+                return None
             label = a.get("email") or a.get("name") or a.get("id")
             try:
                 sub2api_service.delete_account(server, str(a.get("id")))
-                deleted += 1
                 self._append_log(f"已删除错误账号：{label}", "info")
+                return True
             except Exception as exc:
                 self._append_log(f"删除失败 {label}：{exc}", "red")
                 logger.debug({"event": "inspect_delete_error", "id": a.get("id"), "error": repr(exc)})
-            self._bump(deleted=deleted)
+                return False
 
-        # 阶段2：非 error 账号，比对号池命中的走 重授权 → join → 推送
-        ok_accounts = [a for a in remote if str(a.get("status")) != "error"]
-        local_index = self._build_local_email_index()
-        matched = [a for a in ok_accounts if str(a.get("email") or "").strip().lower() in local_index]
-        skipped = len(ok_accounts) - len(matched)
-        self._bump(matched=len(matched), skipped=skipped)
-        self._append_log(
-            f"[阶段2] 非错误账号 {len(ok_accounts)} 个：命中号池 {len(matched)} 个，跳过(不在号池) {skipped} 个",
-            "info",
-        )
+        with ThreadPoolExecutor(max_workers=threads) as ex:
+            futs = [ex.submit(_del_one, a) for a in err_accounts]
+            for fut in as_completed(futs):
+                try:
+                    ok = fut.result()
+                except Exception:
+                    ok = False
+                if ok:
+                    deleted += 1
+                with self._lock:
+                    self._stats["deleted"] = deleted
+                    if ok:
+                        self._stats["total_deleted"] = self._stats.get("total_deleted", 0) + 1
+                    self._stats["updated_at"] = _now()
+
+    def _run_stage2(self, server: dict, to_sync: list, workspace_id: str,
+                    group_ids: list, do_verify: bool, threads: int) -> None:
+        if not to_sync:
+            return
+        from services.register import openai_register
+        from services.openai_backend_api import OpenAIBackendAPI
+        from services.register.postprocess import build_sub2api_account
 
         synced = 0
         failed = 0
-        for a in matched:
+
+        def _sync_one(acc: dict):
             if not self._enabled:
-                self._append_log("已停止", "yellow")
-                return
-            email = str(a.get("email") or "").strip()
-            old_token = local_index.get(email.lower())
+                return None
+            email = str(acc.get("email") or "").strip()
+            old_token = str(acc.get("access_token") or "").strip()
             if not old_token:
-                continue
+                return None
             try:
                 self._append_log(f"重新授权：{email}", "info")
                 logger.debug({"event": "inspect_reauth_start", "email": email})
@@ -179,18 +261,32 @@ class InspectService:
                 logger.debug({"event": "inspect_verify", "email": email, "info": info})
                 acct = build_sub2api_account(updated, info, group_ids)
                 sub2api_service.push_accounts_batch(server, [acct])
-                synced += 1
                 self._append_log(f"已更新令牌 + join 空间 + 推送 sub2api：{email}", "green")
+                return True
             except Exception as exc:
-                failed += 1
                 self._append_log(f"处理失败 {email}：{type(exc).__name__}: {exc}", "red")
                 logger.debug({"event": "inspect_sync_error", "email": email, "error": repr(exc)})
-            self._bump(synced=synced, failed=failed)
+                return False
 
-        self._append_log(
-            f"巡检完成：删除 {deleted}，更新 {synced}，失败 {failed}，跳过 {skipped}",
-            "green",
-        )
+        with ThreadPoolExecutor(max_workers=threads) as ex:
+            futs = [ex.submit(_sync_one, acc) for acc in to_sync]
+            for fut in as_completed(futs):
+                try:
+                    r = fut.result()
+                except Exception:
+                    r = False
+                if r is True:
+                    synced += 1
+                elif r is False:
+                    failed += 1
+                with self._lock:
+                    self._stats["synced"] = synced
+                    self._stats["failed"] = failed
+                    if r is True:
+                        self._stats["total_synced"] = self._stats.get("total_synced", 0) + 1
+                    elif r is False:
+                        self._stats["total_failed"] = self._stats.get("total_failed", 0) + 1
+                    self._stats["updated_at"] = _now()
 
 
 inspect_service = InspectService()

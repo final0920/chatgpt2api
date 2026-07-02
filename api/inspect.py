@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Body, Header
 from fastapi.responses import StreamingResponse
 
 from api.support import require_admin
@@ -19,9 +19,15 @@ def create_router() -> APIRouter:
         return {"inspect": inspect_service.get()}
 
     @router.post("/api/inspect/start")
-    async def start_inspect(authorization: str | None = Header(default=None)):
+    async def start_inspect(
+        payload: dict | None = Body(default=None),
+        authorization: str | None = Header(default=None),
+    ):
         require_admin(authorization)
-        return {"inspect": inspect_service.start()}
+        threads = payload.get("threads") if isinstance(payload, dict) else None
+        if threads is None:
+            return {"inspect": inspect_service.start()}
+        return {"inspect": inspect_service.start(threads)}
 
     @router.post("/api/inspect/stop")
     async def stop_inspect(authorization: str | None = Header(default=None)):
