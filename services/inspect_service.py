@@ -203,21 +203,21 @@ class InspectService:
             return
         deleted = 0
 
-        def _del_one(a: dict):
+        def _del_one(idx: int, a: dict):
             if not self._enabled:
                 return None
             label = a.get("email") or a.get("name") or a.get("id")
             try:
                 sub2api_service.delete_account(server, str(a.get("id")))
-                self._append_log(f"已删除错误账号：{label}", "info")
+                self._append_log(f"[任务{idx}] 已删除错误账号：{label}", "info")
                 return True
             except Exception as exc:
-                self._append_log(f"删除失败 {label}：{exc}", "red")
-                logger.debug({"event": "inspect_delete_error", "id": a.get("id"), "error": repr(exc)})
+                self._append_log(f"[任务{idx}] 删除失败 {label}：{exc}", "red")
+                logger.debug({"event": "inspect_delete_error", "idx": idx, "id": a.get("id"), "error": repr(exc)})
                 return False
 
         with ThreadPoolExecutor(max_workers=threads) as ex:
-            futs = [ex.submit(_del_one, a) for a in err_accounts]
+            futs = [ex.submit(_del_one, i, a) for i, a in enumerate(err_accounts, 1)]
             for fut in as_completed(futs):
                 try:
                     ok = fut.result()
@@ -242,7 +242,7 @@ class InspectService:
         synced = 0
         failed = 0
 
-        def _sync_one(acc: dict):
+        def _sync_one(idx: int, acc: dict):
             if not self._enabled:
                 return None
             email = str(acc.get("email") or "").strip()
@@ -250,26 +250,26 @@ class InspectService:
             if not old_token:
                 return None
             try:
-                self._append_log(f"重新授权：{email}", "info")
-                logger.debug({"event": "inspect_reauth_start", "email": email})
-                tokens = openai_register.reauthorize_login(email)
+                self._append_log(f"[任务{idx}] 重新授权：{email}", "info")
+                logger.debug({"event": "inspect_reauth_start", "idx": idx, "email": email})
+                tokens = openai_register.reauthorize_login(email, index=idx)
                 updated = account_service.reauthorize_account(old_token, tokens, "inspect")
                 new_token = str(updated.get("access_token") or "")
                 client = OpenAIBackendAPI(new_token)
                 client.request_workspace_invite(workspace_id)
                 info = client.verify_workspace_access(workspace_id) if do_verify else {}
-                logger.debug({"event": "inspect_verify", "email": email, "info": info})
+                logger.debug({"event": "inspect_verify", "idx": idx, "email": email, "info": info})
                 acct = build_sub2api_account(updated, info, group_ids)
                 sub2api_service.push_accounts_batch(server, [acct])
-                self._append_log(f"已更新令牌 + join 空间 + 推送 sub2api：{email}", "green")
+                self._append_log(f"[任务{idx}] 已更新令牌 + join 空间 + 推送 sub2api：{email}", "green")
                 return True
             except Exception as exc:
-                self._append_log(f"处理失败 {email}：{type(exc).__name__}: {exc}", "red")
-                logger.debug({"event": "inspect_sync_error", "email": email, "error": repr(exc)})
+                self._append_log(f"[任务{idx}] 处理失败 {email}：{type(exc).__name__}: {exc}", "red")
+                logger.debug({"event": "inspect_sync_error", "idx": idx, "email": email, "error": repr(exc)})
                 return False
 
         with ThreadPoolExecutor(max_workers=threads) as ex:
-            futs = [ex.submit(_sync_one, acc) for acc in to_sync]
+            futs = [ex.submit(_sync_one, i, acc) for i, acc in enumerate(to_sync, 1)]
             for fut in as_completed(futs):
                 try:
                     r = fut.result()
