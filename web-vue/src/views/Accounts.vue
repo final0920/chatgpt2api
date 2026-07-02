@@ -958,7 +958,7 @@ const {
   exportAccounts,
 } = useAccountsPage()
 
-type BatchAction = 'refresh' | 'reset' | 'enable' | 'disable' | 'delete'
+type BatchAction = 'refresh' | 'reset' | 'enable' | 'disable' | 'delete' | 'reauthorize'
 type AccountActionMenuItem = ActionMenuItem & {
   children?: AccountActionMenuItem[]
 }
@@ -1098,6 +1098,7 @@ const exportMenuItems = computed<ActionMenuItem[]>(() => actionMenuGroups(
 const batchMenuItems = computed<AccountActionMenuItem[]>(() => actionMenuGroups<AccountActionMenuItem>(
   [
     { key: 'refresh', label: '批量刷新账号信息和额度' },
+    { key: 'reauthorize', label: '批量重新授权' },
     { key: 'reset', label: '批量重置' },
   ],
   bindAccountGroupBatchItems.value,

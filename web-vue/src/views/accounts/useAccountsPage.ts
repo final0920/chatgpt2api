@@ -30,7 +30,7 @@ import {
 import { statusCategory, type AccountStatusFilter } from './viewUtils'
 
 type AccountsViewMode = 'list' | 'cards'
-type BulkAction = 'refresh' | 'reset' | 'enable' | 'disable' | 'delete'
+type BulkAction = 'refresh' | 'reset' | 'enable' | 'disable' | 'delete' | 'reauthorize'
 type BulkProgressKind = 'refresh' | 'mutation'
 type AccountProxyMode = 'global' | 'direct' | 'group' | 'custom'
 export type AccountImportMode = 'access_token' | 'session_json' | 'cpa_json' | 'remote_cpa' | 'sub2api'
@@ -1630,6 +1630,66 @@ export function useAccountsPage() {
     }
   }
 
+  async function batchReauthorize(targetIds: string[]) {
+    const confirmed = await confirmDialog.ask({
+      title: '批量重新授权',
+      message: `即将对选中的 ${targetIds.length} 个账号逐个自动重新登录授权（每个需数十秒收验证码登录，串行执行、全程较慢）。中途失败的会自动跳过、继续下一个。是否继续？`,
+      confirmText: '开始批量重新授权',
+      cancelText: '取消',
+    })
+    if (!confirmed) return
+
+    openBulkProgress('批量重新授权', targetIds.length, 'mutation')
+    batchBusy.value = true
+    batchActionLabel.value = '批量重新授权'
+    let successCount = 0
+    const errors: string[] = []
+    const processedIds: string[] = []
+    try {
+      for (const accountId of targetIds) {
+        if (bulkStopRequested.value) break
+        try {
+          await accountsApi.reauthorizeAccount(accountId)
+          successCount += 1
+        } catch (error) {
+          // 失败跳过，继续下一个
+          errors.push(`${accountId}：${normalizeErrorMessage(error)}`)
+        } finally {
+          processedIds.push(accountId)
+          const processed = processedIds.length
+          refreshProgress.value = {
+            ...(refreshProgress.value || { total: targetIds.length }),
+            total: targetIds.length,
+            processed,
+            done: processed >= targetIds.length,
+            total_quota: 0,
+          }
+        }
+      }
+      const stopped = bulkStopRequested.value && processedIds.length < targetIds.length
+      refreshProgress.value = {
+        ...(refreshProgress.value || { total: targetIds.length, processed: processedIds.length }),
+        total: targetIds.length,
+        processed: processedIds.length,
+        done: true,
+        total_quota: 0,
+      }
+      if (stopped) {
+        toast.warning(`批量重新授权已停止，已处理 ${processedIds.length}/${targetIds.length}，成功 ${successCount} 个`)
+      } else if (errors.length > 0) {
+        toast.warning(`批量重新授权完成，成功 ${successCount} 个，失败 ${errors.length} 个（失败的已跳过）`)
+      } else {
+        toast.success(`批量重新授权完成，共 ${successCount} 个`)
+      }
+      await loadData({ silentErrorToast: true })
+      const processedSet = new Set(processedIds)
+      selectedIds.value = selectedIds.value.filter((id) => !processedSet.has(id))
+    } finally {
+      batchBusy.value = false
+      batchActionLabel.value = ''
+    }
+  }
+
   async function runBulkAction(
     action: BulkAction,
     ids?: string[]
@@ -1642,6 +1702,11 @@ export function useAccountsPage() {
 
     if (action === 'refresh') {
       await refreshAccountsWithProgress(targetIds, '批量刷新账号信息和额度')
+      return
+    }
+
+    if (action === 'reauthorize') {
+      await batchReauthorize(targetIds)
       return
     }
 
