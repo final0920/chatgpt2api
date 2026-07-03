@@ -2301,6 +2301,206 @@ class Outlook007Provider(BaseMailProvider):
         }
 
 
+# ==================== smsbower-gmail 接码渠道 ====================
+# 与 outlook007 同构（母邮箱----取件URL），但按需随机展开 gmail 加号别名：
+# 一母箱产 N(默认7) 个别名 = 注册 N 个号；别名不预展开、不落库，用已注册账号数控制上限。
+# 取件 URL 返回 {"status":1,"code":"..","all_codes":[..]}，同母箱必须串行 + baseline 差异取码。
+SMSBOWER_ALIAS_PER_MOTHER = 7  # 每个母箱可注册的账号数上限（默认）
+
+_smsbower_locks_guard = Lock()
+_smsbower_mother_locks: dict[str, Lock] = {}
+
+
+def _smsbower_alias_tag() -> str:
+    """5 个随机小写字母的别名 tag。"""
+    return "".join(random.choices(string.ascii_lowercase, k=5))
+
+
+def _smsbower_mother_key(email: str) -> str:
+    """把任意 email（含 +别名）归一化到母箱 key：local 去掉 +后缀 + @domain，小写。"""
+    local, sep, domain = str(email or "").strip().lower().partition("@")
+    if not sep:
+        return str(email or "").strip().lower()
+    return f"{local.split('+', 1)[0]}@{domain}"
+
+
+def _smsbower_get_mother_lock(mother_key: str) -> Lock:
+    with _smsbower_locks_guard:
+        lock = _smsbower_mother_locks.get(mother_key)
+        if lock is None:
+            lock = Lock()
+            _smsbower_mother_locks[mother_key] = lock
+        return lock
+
+
+def _smsbower_scan_accounts() -> tuple[dict[str, int], dict[str, set[str]]]:
+    """扫描已注册账号，返回 (各母箱账号数, 各母箱已用别名集合)。已注册账号是唯一真相源。"""
+    usage: dict[str, int] = {}
+    used_aliases: dict[str, set[str]] = {}
+    try:
+        from services.account_service import account_service
+        for acc in account_service.list_accounts():
+            email = str(acc.get("email") or "").strip().lower()
+            if "@" not in email:
+                continue
+            key = _smsbower_mother_key(email)
+            usage[key] = usage.get(key, 0) + 1
+            used_aliases.setdefault(key, set()).add(email)
+    except Exception:
+        pass
+    return usage, used_aliases
+
+
+def parse_smsbower_gmail_pool(text: str) -> list[dict[str, str]]:
+    """母箱池格式与 outlook007 相同：每行 母邮箱----取件URL。"""
+    return parse_outlook007_pool(text)
+
+
+def inspect_smsbower_gmail_pool(text: str) -> dict[str, Any]:
+    return inspect_outlook007_pool(text)
+
+
+class SmsbowerGmailProvider(BaseMailProvider):
+    """smsbower-gmail 接码渠道：母箱 xxx@gmail.com 配一个取件 URL。
+
+    每次 create_mailbox 为未耗尽母箱随机生成一个 xxx+<5字母>@gmail.com 别名，共享母箱取件 URL；
+    同母箱串行（母箱锁，create 领用→mark_mailbox_result 释放，覆盖"发码→取码"）+ baseline 差异
+    取码，避免 all_codes 错乱。别名不落库：母箱上限用已注册账号数控制（满 N 即耗尽）。
+    """
+
+    name = "smsbower_gmail"
+
+    def __init__(self, entry: dict, conf: dict):
+        super().__init__(conf, str(entry.get("provider_ref") or ""))
+        self.label = str(entry.get("label") or self.provider_ref)
+        self.pool = _normalize_outlook007_pool(entry.get("mailboxes") or entry.get("pool"))
+        self.per_mother = _normalize_int(entry.get("alias_per_email"), SMSBOWER_ALIAS_PER_MOTHER, 1, 200)
+        self.session = _create_session(conf)
+
+    def close(self) -> None:
+        self.session.close()
+
+    def _read_all_codes(self, code_api_url: str) -> tuple[bool, list[str]]:
+        """GET 取件 URL，返回 (ok, all_codes)。ok=False 表示请求/解析失败（可重试）。"""
+        try:
+            resp = self.session.get(
+                code_api_url,
+                headers={"Accept": "application/json", "User-Agent": self.conf["user_agent"]},
+                timeout=self.conf["request_timeout"],
+                verify=False,
+            )
+        except Exception:
+            return False, []
+        try:
+            data = resp.json()
+        except Exception:
+            return False, []
+        if resp.status_code != 200 or not isinstance(data, dict):
+            return False, []
+        codes = data.get("all_codes")
+        if isinstance(codes, list):
+            return True, [str(c).strip() for c in codes if str(c).strip()]
+        one = str(data.get("code") or "").strip()  # 兼容只返回单个 code 的情况
+        return True, ([one] if one else [])
+
+    def create_mailbox(self, username: str | None = None) -> dict[str, Any]:
+        if not self.pool:
+            raise RuntimeError("smsbower-gmail 母箱池为空，请导入 母邮箱----取件URL")
+        usage, used_aliases = _smsbower_scan_accounts()
+        last_err = "smsbower-gmail 无可用母箱（全部已满或正被占用）"
+        for cred in self.pool:
+            mother = str(cred.get("email") or "").strip()
+            code_api_url = str(cred.get("code_api_url") or "").strip()
+            if "@" not in mother or not code_api_url:
+                continue
+            mother_key = _smsbower_mother_key(mother)
+            if usage.get(mother_key, 0) >= self.per_mother:
+                continue  # 该母箱名下已满 N 个号，耗尽
+            lock = _smsbower_get_mother_lock(mother_key)
+            if not lock.acquire(blocking=False):
+                continue  # 该母箱正被占用（有别名在注册周期内），换下一个母箱
+            try:
+                used = used_aliases.get(mother_key, set())
+                alias = ""
+                for _ in range(30):  # 随机生成不与已注册别名冲突的新别名
+                    candidate = outlook_alias_address(mother, _smsbower_alias_tag())
+                    if candidate.lower() not in used:
+                        alias = candidate
+                        break
+                if not alias:
+                    lock.release()
+                    last_err = f"[{self.label}] 母箱 {mother} 别名随机冲突，生成失败"
+                    continue
+                # baseline：发码前记录母箱当前 all_codes，wait_for_code 只取新增码
+                _ok, baseline = self._read_all_codes(code_api_url)
+                return {
+                    "provider": self.name,
+                    "provider_ref": self.provider_ref,
+                    "address": alias,
+                    "login_email": mother,
+                    "alias_of": mother,
+                    "label": self.label,
+                    "code_api_url": code_api_url,
+                    "_smsbower_mother_key": mother_key,
+                    "_smsbower_baseline": baseline,
+                }
+            except Exception:
+                lock.release()
+                raise
+        raise RuntimeError(last_err)
+
+    def wait_for_code(self, mailbox: dict[str, Any]) -> str | None:
+        code_api_url = str(mailbox.get("code_api_url") or "").strip()
+        if not code_api_url:
+            raise RuntimeError("smsbower-gmail 邮箱缺少取件 URL（code_api_url）")
+        baseline = {str(c).strip() for c in (mailbox.get("_smsbower_baseline") or [])}
+        deadline = time.monotonic() + self.conf["wait_timeout"]
+        while time.monotonic() < deadline:
+            ok, codes = self._read_all_codes(code_api_url)
+            if ok:
+                new_codes = [c for c in codes if c and c not in baseline]
+                if new_codes:
+                    return new_codes[-1]  # all_codes 时间升序，取最新的新增码
+            time.sleep(max(0.2, self.conf["wait_interval"]))
+        return None
+
+
+def smsbower_reauth_prepare(mailbox: dict[str, Any], mail_config: dict) -> None:
+    """reauth 场景（非 create_mailbox 领用）：阻塞获取母箱串行锁 + 记 baseline all_codes。
+
+    巡检并发重授权时，同母箱的多个别名账号若并发收码会导致 all_codes 错乱，故阻塞加锁串行；
+    baseline 记录发码前母箱已有的码，wait_for_code 只取新增码。用完须调 smsbower_reauth_finish 释放。
+    """
+    address = str(mailbox.get("address") or "")
+    mother_key = str(mailbox.get("_smsbower_mother_key") or "") or _smsbower_mother_key(address)
+    mailbox["_smsbower_mother_key"] = mother_key
+    _smsbower_get_mother_lock(mother_key).acquire()  # 阻塞，保证同母箱串行
+    baseline: list[str] = []
+    prov = None
+    try:
+        prov = _create_provider(mail_config, "smsbower_gmail", str(mailbox.get("provider_ref") or ""))
+        _ok, baseline = prov._read_all_codes(str(mailbox.get("code_api_url") or ""))
+    except Exception:
+        baseline = []
+    finally:
+        if prov is not None:
+            prov.close()
+    mailbox["_smsbower_baseline"] = baseline
+
+
+def smsbower_reauth_finish(mailbox: dict[str, Any]) -> None:
+    """释放 reauth 期间持有的母箱串行锁。"""
+    mother_key = str(mailbox.get("_smsbower_mother_key") or "")
+    if not mother_key:
+        return
+    lock = _smsbower_mother_locks.get(mother_key)
+    if lock is not None:
+        try:
+            lock.release()
+        except RuntimeError:
+            pass
+
+
 def _entries(mail_config: dict) -> list[dict]:
     result: list[dict] = []
     counters: dict[str, int] = {}
@@ -2360,6 +2560,8 @@ def _create_provider(mail_config: dict, provider: str = "", provider_ref: str = 
         return OutlookTokenProvider(entry, conf)
     if entry["type"] == "outlook007":
         return Outlook007Provider(entry, conf)
+    if entry["type"] == "smsbower_gmail":
+        return SmsbowerGmailProvider(entry, conf)
     raise RuntimeError(f"不支持的 mail.provider: {entry['type']}")
 
 
@@ -2400,6 +2602,17 @@ def mark_mailbox_result(mailbox: dict, *, success: bool, error: Exception | str 
     登录态问题标记 login_required，其余失败标记 failed（可重试但不会自动再次领用）。
     """
     provider_name = str(mailbox.get("provider") or "")
+    if provider_name == SmsbowerGmailProvider.name:
+        # smsbower-gmail 别名不落库（用已注册账号数控制上限），mark 时只释放母箱串行锁
+        mother_key = str(mailbox.get("_smsbower_mother_key") or "")
+        if mother_key:
+            lock = _smsbower_mother_locks.get(mother_key)
+            if lock is not None:
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass
+        return
     if provider_name == Outlook007Provider.name:
         address = str(mailbox.get("address") or "").strip()
         if not address:

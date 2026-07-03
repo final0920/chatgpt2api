@@ -667,6 +667,34 @@
 
                   <p class="register-preview-line">{{ outlook007PoolHint(provider) }}</p>
                 </div>
+
+                <div v-if="providerType(provider) === 'smsbower_gmail'" class="register-provider-section register-provider-section--soft">
+                  <div class="register-provider-section-title">Smsbower Gmail 接码池</div>
+
+                  <label class="register-field">
+                    <span class="register-label">母邮箱池导入</span>
+                    <textarea
+                      class="register-textarea register-textarea--tall"
+                      :disabled="registerConfig.enabled"
+                      :value="String(provider.mailboxes || '')"
+                      placeholder="每行一个：Gmail母邮箱----取件链接"
+                      @input="updateProviderField(index, 'mailboxes', ($event.target as HTMLTextAreaElement).value)"
+                    ></textarea>
+                  </label>
+
+                  <label class="register-field">
+                    <span class="register-label">每个母邮箱可接码次数（加号别名数）</span>
+                    <Input
+                      v-model.number="provider.alias_per_email"
+                      type="number"
+                      min="1"
+                      max="200"
+                      :disabled="registerConfig.enabled"
+                    />
+                  </label>
+
+                  <p class="register-preview-line">{{ smsbowerGmailPoolHint(provider) }}</p>
+                </div>
               </FormSection>
             </div>
           </FormSection>
@@ -826,6 +854,7 @@ const providerTypeOptions = [
   { value: 'ddg_mail', label: 'DDG + CF 收件箱' },
   { value: 'outlook_token', label: 'Microsoft 邮箱凭据池' },
   { value: 'outlook007', label: 'Outlook007 接码池' },
+  { value: 'smsbower_gmail', label: 'Smsbower Gmail 接码池' },
 ]
 const providerTypeGroups = [{ options: providerTypeOptions }]
 
@@ -868,10 +897,12 @@ const providerTypeKeys: Record<string, string[]> = {
   ddg_mail: ['api_base', 'ddg_token', 'cf_inbox_jwt', 'admin_password', 'cf_api_key', 'cf_auth_mode', 'cf_create_path', 'cf_messages_path'],
   outlook_token: ['mailboxes', 'mode', 'imap_host', 'message_limit', 'alias_enabled', 'alias_per_email', 'alias_prefix', 'alias_include_original'],
   outlook007: ['mailboxes'],
+  smsbower_gmail: ['mailboxes', 'alias_per_email'],
 }
 const providerLocalOnlyKeys: Record<string, string[]> = {
   outlook_token: ['mailboxes_count', 'mailboxes_base_count', 'mailboxes_alias_count', 'mailboxes_preview', 'mailboxes_stats', 'mailboxes_parse_stats'],
   outlook007: ['mailboxes_count', 'mailboxes_base_count', 'mailboxes_alias_count', 'mailboxes_preview', 'mailboxes_stats', 'mailboxes_parse_stats'],
+  smsbower_gmail: ['mailboxes_count', 'mailboxes_base_count', 'mailboxes_alias_count', 'mailboxes_preview', 'mailboxes_stats', 'mailboxes_parse_stats'],
 }
 
 const registerProviders = computed(() => registerConfig.value?.mail.providers || [])
@@ -1015,6 +1046,8 @@ function defaultProvider(type = 'cloudmail_gen'): RegisterProvider {
       }
     case 'outlook007':
       return { ...base, mailboxes: '' }
+    case 'smsbower_gmail':
+      return { ...base, mailboxes: '', alias_per_email: 7 }
     default:
       return base
   }
@@ -1160,6 +1193,11 @@ function providerRequirementMessages(provider: RegisterProvider) {
       if (savedCount <= 0 && pendingOutlookCount(provider) <= 0) missing.push('Outlook007 接码池')
       break
     }
+    case 'smsbower_gmail': {
+      const savedCount = Number(provider.mailboxes_count || 0)
+      if (savedCount <= 0 && pendingOutlookCount(provider) <= 0) missing.push('Smsbower Gmail 接码池')
+      break
+    }
     default:
       break
   }
@@ -1250,7 +1288,8 @@ function numeric(value: unknown) {
 }
 
 function pendingOutlookCount(provider: RegisterProvider) {
-  const minSegments = providerType(provider) === 'outlook007' ? 2 : 4
+  const poolType = providerType(provider)
+  const minSegments = (poolType === 'outlook007' || poolType === 'smsbower_gmail') ? 2 : 4
   return String(provider.mailboxes || '')
     .split(/\r?\n/)
     .map(line => line.trim())
@@ -1330,6 +1369,15 @@ function outlook007PoolHint(provider: RegisterProvider) {
   if (summary.retryable > 0 || summary.inUse > 0) return `有 ${summary.retryable} 个临时失败、${summary.inUse} 个占用，可在更多维护里释放后重试。`
   if (summary.available <= 0) return '库存已用完，请导入新的 outlook007 邮箱。'
   return `已保存 ${summary.saved} 个 outlook007 邮箱。`
+}
+
+function smsbowerGmailPoolHint(provider: RegisterProvider) {
+  const saved = numeric(provider.mailboxes_count)
+  const pending = pendingOutlookCount(provider)
+  const per = numeric(provider.alias_per_email) || 7
+  if (pending > 0) return `有 ${pending} 个母邮箱待保存，保存后每个母箱可接 ${per} 次码（${per} 个加号别名）。`
+  if (saved <= 0) return '还没有导入 Smsbower Gmail 母邮箱。'
+  return `已保存 ${saved} 个母邮箱，每个母箱可接 ${per} 次码，约 ${saved * per} 个可注册别名。`
 }
 
 function gptMailState(index: number): GptMailStatusState {

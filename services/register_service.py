@@ -154,6 +154,17 @@ class RegisterService:
                 provider["mailboxes_stats"] = mail_provider.outlook007_pool_stats(credentials)
                 provider["mailboxes_parse_stats"] = mail_provider.inspect_outlook007_pool(pool_text)
                 continue
+            if provider.get("type") == "smsbower_gmail":
+                # smsbower-gmail 母箱池：格式同 outlook007（邮箱----取件URL）；别名不落库（决策 A'），保留 alias_per_email 不脱敏
+                pool_text = str(provider.get("mailboxes") or "")
+                credentials = mail_provider.parse_smsbower_gmail_pool(pool_text)
+                provider["mailboxes"] = ""
+                provider["mailboxes_count"] = len(credentials)
+                provider["mailboxes_base_count"] = len(credentials)
+                provider["mailboxes_alias_count"] = 0
+                provider["mailboxes_preview"] = [self._mask_email(c["email"]) for c in credentials]
+                provider["mailboxes_parse_stats"] = mail_provider.inspect_smsbower_gmail_pool(pool_text)
+                continue
             if provider.get("type") != "outlook_token":
                 continue
             pool_text = str(provider.get("mailboxes") or "")
@@ -192,6 +203,11 @@ class RegisterService:
             for provider in old_providers
             if isinstance(provider, dict) and provider.get("type") == "outlook007" and _provider_id(provider)
         }
+        old_smsbower_by_id = {
+            _provider_id(provider): provider
+            for provider in old_providers
+            if isinstance(provider, dict) and provider.get("type") == "smsbower_gmail" and _provider_id(provider)
+        }
         old_outlook_by_order = [
             provider
             for provider in old_providers
@@ -207,6 +223,22 @@ class RegisterService:
                 if not old_o7 and index < len(old_providers) and isinstance(old_providers[index], dict) and old_providers[index].get("type") == "outlook007":
                     old_o7 = old_providers[index]
                 old_text = str(old_o7.get("mailboxes") or "") if old_o7.get("type") == "outlook007" else ""
+                new_text = str(provider.get("mailboxes") or "")
+                if new_text.strip():
+                    provider["mailboxes"] = _merge_outlook007_pool(old_text, new_text)
+                elif old_text:
+                    provider["mailboxes"] = _merge_outlook007_pool(old_text, "")
+                else:
+                    provider["mailboxes"] = ""
+                for key in ("mailboxes_count", "mailboxes_base_count", "mailboxes_alias_count", "mailboxes_preview", "mailboxes_stats", "mailboxes_parse_stats"):
+                    provider.pop(key, None)
+                continue
+            if provider.get("type") == "smsbower_gmail":
+                # smsbower-gmail 母箱池合并：格式同 outlook007，复用其去重逻辑；alias_per_email 不在 pop 列表内故保留
+                old_sms = old_smsbower_by_id.get(_provider_id(provider)) or {}
+                if not old_sms and index < len(old_providers) and isinstance(old_providers[index], dict) and old_providers[index].get("type") == "smsbower_gmail":
+                    old_sms = old_providers[index]
+                old_text = str(old_sms.get("mailboxes") or "") if old_sms.get("type") == "smsbower_gmail" else ""
                 new_text = str(provider.get("mailboxes") or "")
                 if new_text.strip():
                     provider["mailboxes"] = _merge_outlook007_pool(old_text, new_text)

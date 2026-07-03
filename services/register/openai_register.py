@@ -700,7 +700,7 @@ class PlatformRegistrar:
         self.session.cookies.set("oai-did", self.device_id, domain="auth.openai.com")
 
     def _authorize_continue_login(self, email: str, index: int) -> dict:
-        step(index, "提交 Microsoft 邮箱进入登录验证")
+        step(index, "提交邮箱进入登录验证")
         url = f"{auth_base}/api/accounts/authorize/continue"
 
         def send():
@@ -728,11 +728,11 @@ class PlatformRegistrar:
             raise RuntimeError(error or f"login_continue_http_{getattr(resp, 'status_code', 'unknown')}, detail={json.dumps(detail, ensure_ascii=False)[:300]}")
         data = _response_json(resp)
         if ((data.get("page") or {}).get("payload") or {}).get("passwordless_disabled"):
-            raise RuntimeError("Microsoft 邮箱登录流不支持 passwordless，请换邮箱或使用已有密码重登")
+            raise RuntimeError("该邮箱登录流不支持 passwordless，请换邮箱或使用已有密码重登")
         return data
 
     def _send_passwordless_otp(self, index: int) -> None:
-        step(index, "发送 Microsoft 登录验证码")
+        step(index, "发送邮箱登录验证码")
         url = f"{auth_base}/api/accounts/passwordless/send-otp"
         headers = self._json_headers(f"{auth_base}/log-in/password")
         headers = _headers_with_clearance(headers, url, self.proxy, self.clearance_user_agent)
@@ -754,22 +754,22 @@ class PlatformRegistrar:
         return code == "invalid_state" or "sign-in session is no longer valid" in message
 
     def _passwordless_login(self, email: str, mailbox: dict, index: int) -> dict:
-        if str(mailbox.get("provider") or "") not in {"outlook_token", "outlook007"}:
-            raise RuntimeError("OpenAI 返回登录流，当前邮箱来源无法读取 Microsoft 登录验证码")
-        step(index, "OpenAI 返回登录流，转入 Microsoft passwordless 登录", "yellow")
+        if str(mailbox.get("provider") or "") not in {"outlook_token", "outlook007", "smsbower_gmail"}:
+            raise RuntimeError("OpenAI 返回登录流，当前邮箱来源无法读取登录验证码")
+        step(index, "OpenAI 返回登录流，转入 passwordless 邮箱验证码登录", "yellow")
         for attempt in range(2):
             if attempt:
-                step(index, "Microsoft 登录会话失效，重新发起 passwordless 登录", "yellow")
+                step(index, "登录会话失效，重新发起 passwordless 登录", "yellow")
                 self._reset_auth_cookies()
                 self._platform_authorize(email, index, screen_hint="login_or_signup")
             self._authorize_continue_login(email, index)
             mailbox["_received_after"] = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
             self._send_passwordless_otp(index)
-            step(index, "开始等待 Microsoft 登录验证码")
+            step(index, "开始等待邮箱登录验证码")
             code = wait_for_code(mailbox)
             if not code:
-                raise RuntimeError("等待 Microsoft 登录验证码超时")
-            step(index, f"收到 Microsoft 登录验证码: {code}")
+                raise RuntimeError("等待邮箱登录验证码超时")
+            step(index, f"收到邮箱登录验证码: {code}")
             resp, error = validate_otp(self.session, self.device_id, code)
             if resp is not None and resp.status_code == 200:
                 break
@@ -785,10 +785,10 @@ class PlatformRegistrar:
         continue_url = str(data.get("continue_url") or "").strip() or f"{auth_base}/sign-in-with-chatgpt/platform/consent"
         if _url_path(continue_url) == "/about-you":
             first_name, last_name = _random_name()
-            step(index, "Microsoft 登录验证完成，需要完善账号资料")
+            step(index, "邮箱登录验证完成，需要完善账号资料")
             self._create_account(f"{first_name} {last_name}", _random_birthdate(), index)
             return self._exchange_registered_tokens(index)
-        step(index, "Microsoft 登录验证完成，开始换 token")
+        step(index, "邮箱登录验证完成，开始换 token")
         exchange_errors: list[str] = []
         tokens = exchange_tokens_from_continue_url(
             self.session,
@@ -801,8 +801,8 @@ class PlatformRegistrar:
         )
         if not tokens:
             detail = "；".join(exchange_errors[-4:]) if exchange_errors else "未返回 token"
-            raise RuntimeError(f"Microsoft passwordless token 换取失败: {detail}")
-        step(index, "Microsoft passwordless token 换取完成")
+            raise RuntimeError(f"passwordless token 换取失败: {detail}")
+        step(index, "passwordless token 换取完成")
         return tokens
 
     def _register_user(self, email: str, password: str, index: int) -> None:
@@ -993,9 +993,9 @@ def worker(index: int) -> dict:
 
 
 def _find_readable_mailbox_for_email(email: str) -> dict | None:
-    """从 outlook007 邮箱池按 email 找回可读邮箱，构造 mailbox（含接码链接）。
+    """从 outlook007 / smsbower-gmail 邮箱池按 email 找回可读邮箱，构造 mailbox（含接码链接）。
 
-    只有 outlook007 这类接码邮箱能读取 Microsoft 登录验证码（对应 _passwordless_login
+    只有 outlook007 / smsbower-gmail 这类接码邮箱能读取邮箱登录验证码（对应 _passwordless_login
     的 provider 白名单）。用 mail_provider._entries 生成的 provider_ref，保证后续
     wait_for_code 能按 ref 定位到池——即使该 provider 未 enable 也可（_create_provider
     按 provider_ref 从全部 entries 匹配，不过滤 enable）。
@@ -1017,14 +1017,31 @@ def _find_readable_mailbox_for_email(email: str) -> dict | None:
                     "alias_of": "",
                     "code_api_url": cred["code_api_url"],
                 }
+    # smsbower-gmail：email 是加号别名，归一化到母箱在池里反查取件 URL（决策 E：按 email 归属池）
+    mother_l = mail_provider._smsbower_mother_key(email_l)
+    for entry in mail_provider._entries(_mail_config()):
+        if str(entry.get("type") or "") != "smsbower_gmail":
+            continue
+        provider_ref = str(entry.get("provider_ref") or "")
+        for cred in mail_provider.parse_smsbower_gmail_pool(str(entry.get("mailboxes") or "")):
+            if mail_provider._smsbower_mother_key(str(cred.get("email") or "")) == mother_l:
+                return {
+                    "provider": "smsbower_gmail",
+                    "provider_ref": provider_ref,
+                    "address": email,
+                    "login_email": cred["email"],
+                    "alias_of": cred["email"],
+                    "code_api_url": cred["code_api_url"],
+                    "_smsbower_mother_key": mother_l,
+                }
     return None
 
 
 def reauthorize_login(email: str, proxy: str | None = None, index: int = 0) -> dict:
     """用已有账号邮箱走 passwordless 自动重新登录授权，返回新 token 三件套。
 
-    面向"异常 401 账号重新授权"：从 outlook007 接码池找回该 email 的收码入口，复用注册时的
-    Microsoft passwordless 登录链路（authorize -> 自动收 OTP -> 换 token），拿到全新的
+    面向"异常 401 账号重新授权"：从 outlook007 / smsbower-gmail 接码池找回该 email 的收码入口，复用注册时的
+    passwordless 邮箱验证码登录链路（authorize -> 自动收 OTP -> 换 token），拿到全新的
     access_token / refresh_token / id_token（client_id 与号池刷新一致，落盘后可正常自动刷新）。
     """
     address = str(email or "").strip()
@@ -1032,7 +1049,10 @@ def reauthorize_login(email: str, proxy: str | None = None, index: int = 0) -> d
         raise RuntimeError("账号缺少邮箱，无法自动重新授权")
     mailbox = _find_readable_mailbox_for_email(address)
     if mailbox is None:
-        raise RuntimeError(f"邮箱 {address} 不在 outlook007 接码池，无法自动重新授权（请确认该邮箱已导入邮箱池）")
+        raise RuntimeError(f"邮箱 {address} 不在 outlook007 / smsbower-gmail 接码池，无法自动重新授权（请确认该邮箱已导入邮箱池）")
+    is_smsbower = str(mailbox.get("provider") or "") == "smsbower_gmail"
+    if is_smsbower:
+        mail_provider.smsbower_reauth_prepare(mailbox, _mail_config())  # 母箱串行锁 + baseline，覆盖发码→取码
     registrar = PlatformRegistrar(proxy if proxy is not None else config["proxy"])
     try:
         registrar._platform_authorize(address, index, screen_hint="login_or_signup")
@@ -1047,3 +1067,5 @@ def reauthorize_login(email: str, proxy: str | None = None, index: int = 0) -> d
         }
     finally:
         registrar.close()
+        if is_smsbower:
+            mail_provider.smsbower_reauth_finish(mailbox)
