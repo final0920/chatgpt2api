@@ -693,7 +693,31 @@
                     />
                   </label>
 
+                  <div class="register-outlook-toolbar">
+                    <div class="register-outlook-summary">
+                      <MetaChip size="xs" tone="success">可用 {{ outlookPoolSummary(provider).available }}</MetaChip>
+                      <MetaChip size="xs" tone="muted">母箱 {{ outlookPoolSummary(provider).saved }}</MetaChip>
+                      <MetaChip size="xs" tone="muted">已用 {{ outlookPoolSummary(provider).used }}</MetaChip>
+                      <MetaChip size="xs" :tone="outlookPoolSummary(provider).inUse ? 'warning' : 'muted'">
+                        占用 {{ outlookPoolSummary(provider).inUse }}
+                      </MetaChip>
+                      <MetaChip v-if="outlookPoolSummary(provider).pending" size="xs" tone="info">
+                        待保存 {{ outlookPoolSummary(provider).pending }}
+                      </MetaChip>
+                    </div>
+                  </div>
+
                   <p class="register-preview-line">{{ smsbowerGmailPoolHint(provider) }}</p>
+                  <details class="register-outlook-details">
+                    <summary>母箱池详情</summary>
+                    <div class="register-outlook-detail-chips">
+                      <MetaChip size="xs" tone="muted">母箱数 {{ outlookPoolSummary(provider).saved }}</MetaChip>
+                      <MetaChip size="xs" tone="muted">每箱额度 {{ numeric(provider.alias_per_email) || 7 }}</MetaChip>
+                      <MetaChip size="xs" tone="success">总额度 {{ outlookPoolSummary(provider).available + outlookPoolSummary(provider).used }}</MetaChip>
+                      <MetaChip size="xs" tone="muted">已注册占用 {{ outlookPoolSummary(provider).used }}</MetaChip>
+                      <MetaChip size="xs" tone="info">待保存 {{ outlookPoolSummary(provider).pending }}</MetaChip>
+                    </div>
+                  </details>
                 </div>
               </FormSection>
             </div>

@@ -164,6 +164,11 @@ class RegisterService:
                 provider["mailboxes_alias_count"] = 0
                 provider["mailboxes_preview"] = [self._mask_email(c["email"]) for c in credentials]
                 provider["mailboxes_parse_stats"] = mail_provider.inspect_smsbower_gmail_pool(pool_text)
+                try:
+                    per_m = int(provider.get("alias_per_email"))
+                except (TypeError, ValueError):
+                    per_m = mail_provider.SMSBOWER_ALIAS_PER_MOTHER
+                provider["mailboxes_stats"] = mail_provider.smsbower_gmail_pool_stats(credentials, per_m)
                 continue
             if provider.get("type") != "outlook_token":
                 continue

@@ -2360,6 +2360,44 @@ def inspect_smsbower_gmail_pool(text: str) -> dict[str, Any]:
     return inspect_outlook007_pool(text)
 
 
+def smsbower_gmail_pool_stats(pool: list[dict[str, str]] | None = None,
+                              per_mother: int = SMSBOWER_ALIAS_PER_MOTHER) -> dict[str, int]:
+    """统计 smsbower-gmail 母箱池额度：可用 = 母箱数 × 每箱额度 − 已注册数。
+
+    别名不落库（决策 A'），故没有 outlook007 的 used/in_use 状态机：
+    已用直接取自 accounts.json 里归属这些母箱的已注册账号数；in_use 为当前被母箱锁占用的母箱数。
+    对齐 outlook007_pool_stats 的字段名，让前端 outlookPoolSummary 可直接复用。
+    """
+    per = max(1, int(per_mother or SMSBOWER_ALIAS_PER_MOTHER))
+    mother_keys: set[str] = set()
+    for cred in (pool or []):
+        mk = _smsbower_mother_key(str(cred.get("email") or ""))
+        if mk:
+            mother_keys.add(mk)
+    usage, _used = _smsbower_scan_accounts()
+    used = sum(usage.get(mk, 0) for mk in mother_keys)
+    in_use = 0
+    for mk in mother_keys:
+        lock = _smsbower_mother_locks.get(mk)
+        if lock is not None and lock.locked():
+            in_use += 1
+    mother_count = len(mother_keys)
+    total = mother_count * per
+    available = max(0, total - used)
+    return {
+        "mother_count": mother_count,
+        "per_mother": per,
+        "total": total,
+        "used": used,
+        "in_use": in_use,
+        "busy": in_use,
+        "available": available,
+        "unused": available,
+        "failed": 0,
+        "retryable": 0,
+    }
+
+
 class SmsbowerGmailProvider(BaseMailProvider):
     """smsbower-gmail 接码渠道：母箱 xxx@gmail.com 配一个取件 URL。
 
