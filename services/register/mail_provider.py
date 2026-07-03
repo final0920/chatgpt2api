@@ -2085,7 +2085,7 @@ def outlook007_pool_stats(pool: list[dict[str, str]] | None = None) -> dict[str,
     return counts
 
 
-def _parse_outlook007_pool_with_report(text: str) -> tuple[list[dict[str, str]], dict[str, Any]]:
+def _parse_outlook007_pool_with_report(text: str, allow_schemeless: bool = False) -> tuple[list[dict[str, str]], dict[str, Any]]:
     """解析 outlook007 邮箱池文本，每行格式：email----code_api_url（接码链接）。"""
     credentials: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -2113,9 +2113,12 @@ def _parse_outlook007_pool_with_report(text: str) -> tuple[list[dict[str, str]],
             _add_outlook_parse_issue(issues, line_no, "邮箱格式不正确", email)
             continue
         if not (code_api_url.startswith("http://") or code_api_url.startswith("https://")):
-            report["invalid"] += 1
-            _add_outlook_parse_issue(issues, line_no, "缺少接码链接", email)
-            continue
+            if allow_schemeless and code_api_url and "." in code_api_url:
+                code_api_url = "https://" + code_api_url  # smsbower：取件 URL 允许省略 scheme，默认补 https
+            else:
+                report["invalid"] += 1
+                _add_outlook_parse_issue(issues, line_no, "缺少接码链接", email)
+                continue
         key = email.lower()
         if key in seen:
             report["duplicates"] += 1
@@ -2352,12 +2355,12 @@ def _smsbower_scan_accounts() -> tuple[dict[str, int], dict[str, set[str]]]:
 
 
 def parse_smsbower_gmail_pool(text: str) -> list[dict[str, str]]:
-    """母箱池格式与 outlook007 相同：每行 母邮箱----取件URL。"""
-    return parse_outlook007_pool(text)
+    """母箱池格式与 outlook007 相同：每行 母邮箱----取件URL。取件 URL 允许省略 scheme（自动补 https）。"""
+    return _parse_outlook007_pool_with_report(text, allow_schemeless=True)[0]
 
 
 def inspect_smsbower_gmail_pool(text: str) -> dict[str, Any]:
-    return inspect_outlook007_pool(text)
+    return _parse_outlook007_pool_with_report(text, allow_schemeless=True)[1]
 
 
 def smsbower_gmail_pool_stats(pool: list[dict[str, str]] | None = None,

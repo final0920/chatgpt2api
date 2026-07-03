@@ -47,6 +47,16 @@ def _merge_outlook007_pool(old_text: str, new_text: str) -> str:
     return _serialize_outlook007_pool(list(merged.values()))
 
 
+def _merge_smsbower_gmail_pool(old_text: str, new_text: str) -> str:
+    """合并 smsbower-gmail 母箱池，按母箱去重；取件 URL 允许省略 scheme（parse 自动补 https）。"""
+    merged: dict[str, dict] = {}
+    for credential in mail_provider.parse_smsbower_gmail_pool(old_text or ""):
+        merged[credential["email"].strip().lower()] = credential
+    for credential in mail_provider.parse_smsbower_gmail_pool(new_text or ""):
+        merged[credential["email"].strip().lower()] = credential
+    return _serialize_outlook007_pool(list(merged.values()))
+
+
 def _outlook_credential_changed(old: dict | None, new: dict) -> bool:
     if not old:
         return False
@@ -246,9 +256,9 @@ class RegisterService:
                 old_text = str(old_sms.get("mailboxes") or "") if old_sms.get("type") == "smsbower_gmail" else ""
                 new_text = str(provider.get("mailboxes") or "")
                 if new_text.strip():
-                    provider["mailboxes"] = _merge_outlook007_pool(old_text, new_text)
+                    provider["mailboxes"] = _merge_smsbower_gmail_pool(old_text, new_text)
                 elif old_text:
-                    provider["mailboxes"] = _merge_outlook007_pool(old_text, "")
+                    provider["mailboxes"] = _merge_smsbower_gmail_pool(old_text, "")
                 else:
                     provider["mailboxes"] = ""
                 for key in ("mailboxes_count", "mailboxes_base_count", "mailboxes_alias_count", "mailboxes_preview", "mailboxes_stats", "mailboxes_parse_stats"):
