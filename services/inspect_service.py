@@ -34,6 +34,7 @@ class InspectService:
         self._enabled = False
         self._logs: list[dict] = []
         self._stats: dict = self._empty_stats()
+        self._proxy_ref = ""  # 巡检重授权代理引用：""=跟随注册默认代理；direct/group:xxx/自定义代理串
 
     @staticmethod
     def _empty_stats() -> dict:
@@ -49,6 +50,7 @@ class InspectService:
         with self._lock:
             return {
                 "enabled": self._enabled,
+                "proxy": self._proxy_ref,
                 "stats": dict(self._stats),
                 "logs": self._logs[-300:],
             }
@@ -63,7 +65,7 @@ class InspectService:
             self._stats.update(updates)
             self._stats["updated_at"] = _now()
 
-    def start(self, threads: int = DEFAULT_THREADS) -> dict:
+    def start(self, threads: int = DEFAULT_THREADS, proxy_ref: str = "") -> dict:
         with self._lock:
             if self._runner and self._runner.is_alive():
                 return self.get()
@@ -72,6 +74,7 @@ class InspectService:
             except (TypeError, ValueError):
                 threads = DEFAULT_THREADS
             threads = max(MIN_THREADS, min(threads, MAX_THREADS))
+            self._proxy_ref = str(proxy_ref or "").strip()
             self._enabled = True
             self._logs = []
             self._stats = self._empty_stats()
@@ -252,7 +255,7 @@ class InspectService:
             try:
                 self._append_log(f"[任务{idx}] 重新授权：{email}", "info")
                 logger.debug({"event": "inspect_reauth_start", "idx": idx, "email": email})
-                tokens = openai_register.reauthorize_login(email, index=idx)
+                tokens = openai_register.reauthorize_login(email, proxy=(self._proxy_ref or None), index=idx)
                 updated = account_service.reauthorize_account(old_token, tokens, "inspect")
                 new_token = str(updated.get("access_token") or "")
                 client = OpenAIBackendAPI(new_token)

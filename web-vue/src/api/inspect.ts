@@ -23,6 +23,7 @@ export type InspectStats = {
 
 export type InspectState = {
   enabled: boolean
+  proxy?: string
   stats?: InspectStats
   logs?: Array<{ time: string; text: string; level?: string }>
 }
@@ -31,11 +32,11 @@ export const inspectApi = {
   getState() {
     return apiClient.get<any, { inspect: InspectState }>('/api/inspect')
   },
-  start(threads?: number) {
-    return apiClient.post<any, { inspect: InspectState }>(
-      '/api/inspect/start',
-      threads != null ? { threads } : {},
-    )
+  start(threads?: number, proxy?: string) {
+    const body: Record<string, unknown> = {}
+    if (threads != null) body.threads = threads
+    if (proxy != null) body.proxy = proxy
+    return apiClient.post<any, { inspect: InspectState }>('/api/inspect/start', body)
   },
   stop() {
     return apiClient.post<any, { inspect: InspectState }>('/api/inspect/stop')

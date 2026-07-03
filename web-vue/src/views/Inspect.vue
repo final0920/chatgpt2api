@@ -31,6 +31,41 @@
                 @input="onThreadsInput"
               />
             </label>
+            <label class="inspect-threads">
+              代理
+              <select
+                class="inspect-proxy-select"
+                :value="proxyMode"
+                :disabled="running || toggling"
+                @change="onProxyModeChange"
+              >
+                <option value="global">使用默认代理</option>
+                <option value="direct">直连</option>
+                <option value="group">代理组</option>
+                <option value="custom">自定义代理</option>
+              </select>
+            </label>
+            <label v-if="proxyMode === 'group'" class="inspect-threads">
+              <select
+                class="inspect-proxy-select"
+                :value="selectedProxyGroupId"
+                :disabled="running || toggling"
+                @change="onProxyGroupChange"
+              >
+                <option value="">选择代理组</option>
+                <option v-for="g in proxyGroups" :key="g.id" :value="g.id">{{ g.name }}</option>
+              </select>
+            </label>
+            <label v-else-if="proxyMode === 'custom'" class="inspect-threads">
+              <input
+                class="inspect-proxy-input"
+                type="text"
+                placeholder="http://user:pass@host:port"
+                :value="customProxyInput"
+                :disabled="running || toggling"
+                @input="onCustomProxyInput"
+              />
+            </label>
           </div>
           <div class="inspect-stats">
             <span>第 {{ stats.round }} 轮</span>
@@ -67,6 +102,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Checkbox } from 'nanocat-ui'
 import { getAuthToken } from '@/api/client'
 import { inspectApi, type InspectState } from '@/api/inspect'
+import { proxyApi, parseProxyReference, serializeProxyReference, type ProxyGroup, type ProxyReferenceMode } from '@/api/proxy'
 import { PagePanel, PanelHeader, RuntimeLogPanel, StateBadge, SurfaceBox, type RuntimeLogPanelLine } from '@/components/ai'
 import { useToast } from '@/composables/useToast'
 
@@ -74,8 +110,18 @@ const toast = useToast()
 const inspectState = ref<InspectState | null>(null)
 const toggling = ref(false)
 const threads = ref(3)
+const proxyMode = ref<ProxyReferenceMode>('global')
+const selectedProxyGroupId = ref('')
+const customProxyInput = ref('')
+const proxyGroups = ref<ProxyGroup[]>([])
 const eventSource = ref<EventSource | null>(null)
 const pollTimer = ref<number | null>(null)
+
+const proxyRef = computed(() => {
+  if (proxyMode.value === 'group') return serializeProxyReference('group', selectedProxyGroupId.value)
+  if (proxyMode.value === 'custom') return serializeProxyReference('custom', customProxyInput.value)
+  return serializeProxyReference(proxyMode.value)
+})
 
 const running = computed(() => Boolean(inspectState.value?.enabled || inspectState.value?.stats?.running))
 const stats = computed(() => ({
@@ -96,6 +142,36 @@ function onThreadsInput(event: Event) {
   const raw = Number((event.target as HTMLInputElement).value)
   if (Number.isNaN(raw)) return
   threads.value = Math.max(1, Math.min(10, Math.trunc(raw)))
+}
+
+function onProxyModeChange(event: Event) {
+  proxyMode.value = (event.target as HTMLSelectElement).value as ProxyReferenceMode
+}
+
+function onProxyGroupChange(event: Event) {
+  selectedProxyGroupId.value = (event.target as HTMLSelectElement).value
+}
+
+function onCustomProxyInput(event: Event) {
+  customProxyInput.value = (event.target as HTMLInputElement).value
+}
+
+function initProxyFromState() {
+  const raw = inspectState.value?.proxy
+  if (raw === undefined || raw === null) return
+  const reference = parseProxyReference(raw)
+  proxyMode.value = reference.mode === 'profile' ? 'custom' : reference.mode
+  if (reference.mode === 'group') selectedProxyGroupId.value = reference.value
+  else if (reference.mode === 'custom' || reference.mode === 'profile') customProxyInput.value = reference.value
+}
+
+async function loadProxyGroups() {
+  try {
+    const res = await proxyApi.listGroups()
+    proxyGroups.value = res.groups || []
+  } catch {
+    /* 代理组拉取失败不阻塞巡检 */
+  }
 }
 
 function normalizeLogLevel(level?: string) {
@@ -140,7 +216,7 @@ async function toggleInspect(next: boolean) {
   toggling.value = true
   try {
     if (next) {
-      const res = await inspectApi.start(threads.value)
+      const res = await inspectApi.start(threads.value, proxyRef.value)
       applyState(res.inspect)
       toast.success('巡检已启动')
       startLiveUpdates()
@@ -207,6 +283,8 @@ function stopPolling() {
 
 onMounted(async () => {
   await loadState()
+  initProxyFromState()
+  loadProxyGroups()
   startLiveUpdates()
 })
 
@@ -251,6 +329,30 @@ onBeforeUnmount(() => {
 }
 
 .inspect-threads-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.inspect-proxy-select,
+.inspect-proxy-input {
+  padding: 4px 8px;
+  border: 1px solid var(--border, #d4d4d4);
+  border-radius: 6px;
+  background: var(--background, #fff);
+  color: inherit;
+  font-size: 12px;
+}
+
+.inspect-proxy-select {
+  min-width: 104px;
+}
+
+.inspect-proxy-input {
+  width: 220px;
+}
+
+.inspect-proxy-select:disabled,
+.inspect-proxy-input:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }

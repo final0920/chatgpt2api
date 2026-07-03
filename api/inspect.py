@@ -25,9 +25,10 @@ def create_router() -> APIRouter:
     ):
         require_admin(authorization)
         threads = payload.get("threads") if isinstance(payload, dict) else None
+        proxy_ref = str(payload.get("proxy") or "").strip() if isinstance(payload, dict) else ""
         if threads is None:
-            return {"inspect": inspect_service.start()}
-        return {"inspect": inspect_service.start(threads)}
+            return {"inspect": inspect_service.start(proxy_ref=proxy_ref)}
+        return {"inspect": inspect_service.start(threads, proxy_ref=proxy_ref)}
 
     @router.post("/api/inspect/stop")
     async def stop_inspect(authorization: str | None = Header(default=None)):
