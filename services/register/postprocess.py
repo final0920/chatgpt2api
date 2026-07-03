@@ -55,7 +55,7 @@ def _jwt_payload(token: str) -> dict:
         return {}
 
 
-def build_sub2api_account(account: dict, info: dict, group_ids: list[int]) -> dict:
+def build_sub2api_account(account: dict, info: dict, group_ids: list[int], concurrency: int = 5) -> dict:
     """把一个账号组装成 sub2api BatchCreate 结构（= 参考文件账号结构 + 顶层 group_ids）。
 
     account: 号池账号 dict（access_token / refresh_token / id_token / email / user_id ...）
@@ -98,7 +98,7 @@ def build_sub2api_account(account: dict, info: dict, group_ids: list[int]) -> di
             "openai_oauth_responses_websockets_v2_mode": "off",
             "privacy_mode": "training_off",
         },
-        "concurrency": 3,
+        "concurrency": concurrency,
         "priority": 1,
         "rate_multiplier": 1,
         "auto_pause_on_expired": True,
@@ -164,7 +164,7 @@ def run_postprocess(result: dict) -> dict:
             logger.debug({"event": "register_postprocess_verify", "email": email, "info": info})
 
         # ④ 组装 sub2api 结构（+ 顶层 group_ids）
-        sub2api_account = build_sub2api_account(account, info, group_ids)
+        sub2api_account = build_sub2api_account(account, info, group_ids, int(settings.get("concurrency") or 5))
         logger.debug({
             "event": "register_postprocess_push_request",
             "email": email,

@@ -157,6 +157,7 @@ export function normalizeRegisterPostprocess(raw: unknown): Settings['register_p
     sub2api_api_key: cleanString(source.sub2api_api_key),
     group_ids: groupIds,
     verify_chat_access: boolValue(source.verify_chat_access, true),
+    concurrency: numberValue(source.concurrency, 5, 1),
   }
 }
 

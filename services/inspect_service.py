@@ -242,6 +242,7 @@ class InspectService:
         from services.openai_backend_api import OpenAIBackendAPI
         from services.register.postprocess import build_sub2api_account
 
+        pp_concurrency = int(config.get_register_postprocess_settings().get("concurrency") or 5)
         synced = 0
         failed = 0
 
@@ -253,16 +254,19 @@ class InspectService:
             if not old_token:
                 return None
             try:
-                self._append_log(f"[任务{idx}] 重新授权：{email}", "info")
+                self._append_log(f"[任务{idx}] 开始重新授权：{email}", "info")
                 logger.debug({"event": "inspect_reauth_start", "idx": idx, "email": email})
                 tokens = openai_register.reauthorize_login(email, proxy=(self._proxy_ref or None), index=idx)
+                egress_ip = str(tokens.get("egress_ip") or "").strip()
+                self._append_log(f"[任务{idx}] 重新授权：{email}  ip:{egress_ip or '未知'}", "info")
+                logger.debug({"event": "inspect_reauth_egress", "idx": idx, "email": email, "egress_ip": egress_ip})
                 updated = account_service.reauthorize_account(old_token, tokens, "inspect")
                 new_token = str(updated.get("access_token") or "")
                 client = OpenAIBackendAPI(new_token)
                 client.request_workspace_invite(workspace_id)
                 info = client.verify_workspace_access(workspace_id) if do_verify else {}
                 logger.debug({"event": "inspect_verify", "idx": idx, "email": email, "info": info})
-                acct = build_sub2api_account(updated, info, group_ids)
+                acct = build_sub2api_account(updated, info, group_ids, pp_concurrency)
                 sub2api_service.push_accounts_batch(server, [acct])
                 self._append_log(f"[任务{idx}] 已更新令牌 + join 空间 + 推送 sub2api：{email}", "green")
                 return True

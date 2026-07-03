@@ -752,6 +752,14 @@
               placeholder="2"
             />
           </FormField>
+          <FormField label="推送并发 (concurrency，单账号并发数，默认 5)">
+            <Input
+              v-model.number="localSettings.register_postprocess.concurrency"
+              type="number"
+              block
+              placeholder="5"
+            />
+          </FormField>
         </FormSection>
       </div>
 

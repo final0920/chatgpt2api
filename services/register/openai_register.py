@@ -1037,6 +1037,23 @@ def _find_readable_mailbox_for_email(email: str) -> dict | None:
     return None
 
 
+def _probe_egress_ip(session: Any, timeout: float = 8.0) -> str:
+    """用与业务请求同一个 session（出口固定）探测公网出口 IP；失败返回空串，绝不影响主流程。
+
+    与 reauthorize_login 复用同一 registrar.session，故拿到的就是重新授权实际走的出口——
+    即使代理组轮询，同一 session 的出口在创建时已定死，不会出现"查 IP 与授权走不同节点"的偏差。
+    """
+    for url in ("https://api.ipify.org?format=json", "https://api64.ipify.org?format=json"):
+        try:
+            resp = session.get(url, timeout=timeout)
+            ip = str((resp.json() or {}).get("ip") or "").strip()
+            if ip:
+                return ip
+        except Exception:
+            continue
+    return ""
+
+
 def reauthorize_login(email: str, proxy: str | None = None, index: int = 0) -> dict:
     """用已有账号邮箱走 passwordless 自动重新登录授权，返回新 token 三件套。
 
@@ -1055,6 +1072,7 @@ def reauthorize_login(email: str, proxy: str | None = None, index: int = 0) -> d
         mail_provider.smsbower_reauth_prepare(mailbox, _mail_config())  # 母箱串行锁 + baseline，覆盖发码→取码
     registrar = PlatformRegistrar(proxy if proxy is not None else config["proxy"])
     try:
+        egress_ip = _probe_egress_ip(registrar.session)
         registrar._platform_authorize(address, index, screen_hint="login_or_signup")
         tokens = registrar._passwordless_login(address, mailbox, index)
         access_token = str(tokens.get("access_token") or "").strip()
@@ -1064,6 +1082,7 @@ def reauthorize_login(email: str, proxy: str | None = None, index: int = 0) -> d
             "access_token": access_token,
             "refresh_token": str(tokens.get("refresh_token") or "").strip(),
             "id_token": str(tokens.get("id_token") or "").strip(),
+            "egress_ip": egress_ip,
         }
     finally:
         registrar.close()

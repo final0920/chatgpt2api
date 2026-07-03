@@ -196,6 +196,7 @@ export interface Settings {
     sub2api_api_key: string
     group_ids: number[]
     verify_chat_access: boolean
+    concurrency: number
   }
   proxy_profiles?: Array<{
     id: string

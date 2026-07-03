@@ -107,6 +107,7 @@ DEFAULT_REGISTER_POSTPROCESS = {
     "sub2api_api_key": "",
     "group_ids": [2],
     "verify_chat_access": True,
+    "concurrency": 5,
 }
 
 
@@ -335,6 +336,14 @@ def _normalize_group_ids(value: object) -> list[int]:
     return normalized
 
 
+def _normalize_concurrency(value: object) -> int:
+    """归一化 sub2api 推送并发（账号 concurrency 属性）：缺省/非法回退 5，范围 1~1000。"""
+    try:
+        return max(1, min(int(value), 1000))
+    except (TypeError, ValueError):
+        return 5
+
+
 def _normalize_register_postprocess_settings(value: object) -> dict[str, object]:
     source = value if isinstance(value, dict) else {}
     return {
@@ -346,6 +355,7 @@ def _normalize_register_postprocess_settings(value: object) -> dict[str, object]
         "sub2api_api_key": str(source.get("sub2api_api_key") or "").strip(),
         "group_ids": _normalize_group_ids(source.get("group_ids")),
         "verify_chat_access": _normalize_bool(source.get("verify_chat_access"), True),
+        "concurrency": _normalize_concurrency(source.get("concurrency")),
     }
 
 

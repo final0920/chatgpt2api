@@ -2401,6 +2401,37 @@ def smsbower_gmail_pool_stats(pool: list[dict[str, str]] | None = None,
     }
 
 
+def prune_smsbower_unused_credentials(credentials: list[dict[str, str]]) -> tuple[list[dict[str, str]], int]:
+    """删除"未使用材料"：从没产出注册账号的母箱（accounts.json 里该母箱 0 个账号）。
+
+    已注册账号是唯一真相源（决策 A'），故"未使用"= 该母箱在号池无任何注册产出；
+    有产出（used>0）的母箱一律保留，避免误删真实凭据。返回 (保留列表, 移除数)。
+    """
+    usage, _used = _smsbower_scan_accounts()
+    kept: list[dict[str, str]] = []
+    removed = 0
+    for cred in credentials:
+        mk = _smsbower_mother_key(str(cred.get("email") or ""))
+        if mk and usage.get(mk, 0) > 0:
+            kept.append(cred)
+        else:
+            removed += 1
+    return kept, removed
+
+
+def reset_smsbower_pool_state() -> int:
+    """重置 smsbower-gmail 母箱状态：清空母箱级内存锁（释放异常残留占用）。
+
+    smsbower 别名不落库、无 used.json 持久状态；唯一运行时状态是母箱串行锁，
+    清锁后 in_use 统计（靠 lock.locked()）归 0。已注册账号（accounts.json）为真相源不受影响。
+    仅在注册任务停止时调用（前端菜单在 enabled 时禁用），故无正在持锁的线程。返回清除的锁数。
+    """
+    with _smsbower_locks_guard:
+        count = len(_smsbower_mother_locks)
+        _smsbower_mother_locks.clear()
+        return count
+
+
 class SmsbowerGmailProvider(BaseMailProvider):
     """smsbower-gmail 接码渠道：母箱 xxx@gmail.com 配一个取件 URL。
 

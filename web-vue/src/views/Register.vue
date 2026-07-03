@@ -705,6 +705,16 @@
                         待保存 {{ outlookPoolSummary(provider).pending }}
                       </MetaChip>
                     </div>
+
+                    <FloatingActionMenu
+                      label="更多维护"
+                      :items="smsbowerPoolActionItems"
+                      :disabled="registerConfig.enabled || legacySaving"
+                      align="right"
+                      placement="auto"
+                      :trigger-min-width="96"
+                      @select="handleSmsbowerPoolAction"
+                    />
                   </div>
 
                   <p class="register-preview-line">{{ smsbowerGmailPoolHint(provider) }}</p>
@@ -790,6 +800,7 @@ import { useToast } from '@/composables/useToast'
 
 type RegisterMode = 'total' | 'quota' | 'available'
 type OutlookResetScope = 'all' | 'retryable' | 'invalid' | 'unused'
+type SmsbowerResetScope = 'smsbower_unused' | 'smsbower_reset'
 type RegisterProxyMode = 'global' | 'direct' | 'group' | 'custom'
 type GptMailStatusState = {
   loading: boolean
@@ -907,6 +918,10 @@ const outlookPoolActionItems: ActionMenuItem[] = [
   { key: 'invalid', label: '清除异常标记', dividerBefore: true },
   { key: 'unused', label: '删除未使用材料', danger: true, dividerBefore: true },
   { key: 'all', label: '重置邮箱池状态', danger: true },
+]
+const smsbowerPoolActionItems: ActionMenuItem[] = [
+  { key: 'smsbower_unused', label: '删除未使用母箱', danger: true },
+  { key: 'smsbower_reset', label: '重置母箱状态', danger: true, dividerBefore: true },
 ]
 const providerCommonKeys = ['id', 'enable', 'type', 'label'] as const
 const providerTypeKeys: Record<string, string[]> = {
@@ -1632,6 +1647,39 @@ function handleOutlookPoolAction(key: string) {
   }
   if (key === 'retryable' || key === 'invalid' || key === 'unused' || key === 'all') {
     void resetOutlookPool(key)
+  }
+}
+
+function handleSmsbowerPoolAction(key: string) {
+  if (key === 'smsbower_unused' || key === 'smsbower_reset') {
+    void resetSmsbowerPool(key)
+  }
+}
+
+async function resetSmsbowerPool(scope: SmsbowerResetScope) {
+  const copy: Record<SmsbowerResetScope, { title: string; message: string; confirmText: string }> = {
+    smsbower_unused: {
+      title: '删除未使用母箱',
+      message: '从已保存母箱池中移除还没有产出任何注册账号的母箱（以号池已注册账号为准）。已产出账号的母箱会保留。',
+      confirmText: '删除',
+    },
+    smsbower_reset: {
+      title: '重置母箱状态',
+      message: '清空母箱级串行锁（释放异常/残留占用），占用统计会归零。已注册账号不受影响。',
+      confirmText: '重置',
+    },
+  }
+  const ok = await confirmDialog.ask(copy[scope])
+  if (!ok) return
+  legacySaving.value = true
+  try {
+    const response = await registerApi.resetOutlookPool(scope)
+    applyRegisterConfig(response.register)
+    toast.success('母箱池状态已更新')
+  } catch (error: any) {
+    toast.error(error?.message || '更新母箱池状态失败')
+  } finally {
+    legacySaving.value = false
   }
 }
 

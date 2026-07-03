@@ -324,6 +324,26 @@ class RegisterService:
                 provider.pop(key, None)
         return total_removed
 
+    def _prune_unused_smsbower_pools(self) -> int:
+        mail = self._config.get("mail")
+        if not isinstance(mail, dict):
+            return 0
+        providers = mail.get("providers")
+        if not isinstance(providers, list):
+            return 0
+        total_removed = 0
+        for provider in providers:
+            if not isinstance(provider, dict) or provider.get("type") != "smsbower_gmail":
+                continue
+            credentials = mail_provider.parse_smsbower_gmail_pool(str(provider.get("mailboxes") or ""))
+            kept, removed = mail_provider.prune_smsbower_unused_credentials(credentials)
+            if removed:
+                provider["mailboxes"] = _serialize_outlook007_pool(kept)
+                total_removed += removed
+            for key in ("mailboxes_count", "mailboxes_base_count", "mailboxes_alias_count", "mailboxes_preview", "mailboxes_stats", "mailboxes_parse_stats"):
+                provider.pop(key, None)
+        return total_removed
+
     def update(self, updates: dict) -> dict:
         with self._lock:
             self._merge_outlook_pools(updates)
@@ -372,6 +392,18 @@ class RegisterService:
 
     def reset_outlook_pool(self, scope: str = "all") -> dict:
         scope = str(scope or "all").strip().lower()
+        if scope in {"smsbower_unused", "smsbower_reset"}:
+            # smsbower-gmail 母箱池独立维护：删无注册产出的母箱 / 清母箱锁（语义不同于 outlook）
+            with self._lock:
+                if scope == "smsbower_unused":
+                    removed = self._prune_unused_smsbower_pools()
+                    openai_register.config.update({k: self._config[k] for k in ("mail", "proxy", "total", "threads")})
+                    self._save()
+                    self._append_log(f"已删除 smsbower-gmail 未使用母箱（无注册产出），移除 {removed} 个", "yellow")
+                else:
+                    cleared = mail_provider.reset_smsbower_pool_state()
+                    self._append_log(f"已重置 smsbower-gmail 母箱状态，释放 {cleared} 个母箱锁", "yellow")
+            return self.get()
         if scope == "unused":
             with self._lock:
                 removed = self._prune_unused_outlook_pools()
