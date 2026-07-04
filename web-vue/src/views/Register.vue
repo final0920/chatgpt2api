@@ -725,6 +725,7 @@
                       <MetaChip size="xs" tone="muted">每箱额度 {{ numeric(provider.alias_per_email) || 7 }}</MetaChip>
                       <MetaChip size="xs" tone="success">总额度 {{ outlookPoolSummary(provider).available + outlookPoolSummary(provider).used }}</MetaChip>
                       <MetaChip size="xs" tone="muted">已注册占用 {{ outlookPoolSummary(provider).used }}</MetaChip>
+                      <MetaChip v-if="outlookPoolSummary(provider).exhausted" size="xs" tone="warning">耗尽 {{ outlookPoolSummary(provider).exhausted }}</MetaChip>
                       <MetaChip size="xs" tone="info">待保存 {{ outlookPoolSummary(provider).pending }}</MetaChip>
                     </div>
                   </details>
@@ -784,9 +785,10 @@
                     <summary>母箱池详情</summary>
                     <div class="register-outlook-detail-chips">
                       <MetaChip size="xs" tone="muted">母箱数 {{ outlookPoolSummary(provider).saved }}</MetaChip>
-                      <MetaChip size="xs" tone="muted">每箱额度 {{ numeric(provider.alias_per_email) || 5 }}</MetaChip>
+                      <MetaChip size="xs" tone="muted">每箱额度 {{ numeric(provider.alias_per_email) || 7 }}</MetaChip>
                       <MetaChip size="xs" tone="success">总额度 {{ outlookPoolSummary(provider).available + outlookPoolSummary(provider).used }}</MetaChip>
                       <MetaChip size="xs" tone="muted">已注册占用 {{ outlookPoolSummary(provider).used }}</MetaChip>
+                      <MetaChip v-if="outlookPoolSummary(provider).exhausted" size="xs" tone="warning">耗尽 {{ outlookPoolSummary(provider).exhausted }}</MetaChip>
                       <MetaChip size="xs" tone="info">待保存 {{ outlookPoolSummary(provider).pending }}</MetaChip>
                     </div>
                   </details>
@@ -1158,7 +1160,7 @@ function defaultProvider(type = 'cloudmail_gen'): RegisterProvider {
     case 'smsbower_gmail':
       return { ...base, mailboxes: '', alias_per_email: 7 }
     case 'gmcode_gmail':
-      return { ...base, mailboxes: '', alias_per_email: 5 }
+      return { ...base, mailboxes: '', alias_per_email: 7 }
     default:
       return base
   }
@@ -1433,6 +1435,7 @@ function outlookPoolSummary(provider: RegisterProvider) {
     failed,
     retryable,
     invalid,
+    exhausted: numeric(stats.exhausted),
     abnormal: retryable + invalid,
   }
 }
@@ -1499,7 +1502,7 @@ function smsbowerGmailPoolHint(provider: RegisterProvider) {
 function gmcodeGmailPoolHint(provider: RegisterProvider) {
   const saved = numeric(provider.mailboxes_count)
   const pending = pendingOutlookCount(provider)
-  const per = numeric(provider.alias_per_email) || 5
+  const per = numeric(provider.alias_per_email) || 7
   if (pending > 0) return `有 ${pending} 个母邮箱待保存，保存后每个母箱可接 ${per} 次码（${per} 个加号别名）。`
   if (saved <= 0) return '还没有导入 Gmcode Gmail 母邮箱。'
   return `已保存 ${saved} 个母邮箱，每个母箱可接 ${per} 次码，约 ${saved * per} 个可注册别名。`

@@ -2337,6 +2337,72 @@ def _smsbower_get_mother_lock(mother_key: str) -> Lock:
         return lock
 
 
+# ---- gmail 加号别名母箱"耗尽"持久记录（smsbower / gmcode 共用）----
+# 场景：某母箱的别名注册时 OpenAI 报 user_already_exists（该 gmail 在 OpenAI 侧已满/被占）。
+# 这类失败不进 accounts.json（注册失败），无法靠"已注册数"感知，故单独持久记录母箱耗尽，
+# 之后 create_mailbox 直接跳过该母箱——无论 alias_per_email 设多少都不再分裂。
+GMAIL_ALIAS_EXHAUSTED_FILE = DATA_DIR / "gmail_alias_exhausted.json"
+_gmail_exhausted_lock = Lock()
+
+
+def _load_gmail_exhausted() -> dict[str, dict[str, Any]]:
+    """读取已耗尽母箱：{mother_key(小写): {reason, at}}。"""
+    data = read_json_file(GMAIL_ALIAS_EXHAUSTED_FILE, name="gmail_alias_exhausted.json",
+                          default_factory=dict, expected_types=(dict,))
+    result: dict[str, dict[str, Any]] = {}
+    if isinstance(data, dict):
+        for key, value in data.items():
+            mk = str(key).strip().lower()
+            if not mk:
+                continue
+            if isinstance(value, dict):
+                result[mk] = {"reason": str(value.get("reason") or ""), "at": str(value.get("at") or "")}
+            else:
+                result[mk] = {"reason": str(value or ""), "at": ""}
+    return result
+
+
+def _save_gmail_exhausted(state: dict[str, dict[str, Any]]) -> None:
+    GMAIL_ALIAS_EXHAUSTED_FILE.parent.mkdir(parents=True, exist_ok=True)
+    write_json_file(GMAIL_ALIAS_EXHAUSTED_FILE, {key: state[key] for key in sorted(state)})
+
+
+def is_gmail_mother_exhausted(mother_key: str) -> bool:
+    mk = str(mother_key or "").strip().lower()
+    if not mk:
+        return False
+    with _gmail_exhausted_lock:
+        return mk in _load_gmail_exhausted()
+
+
+def mark_gmail_mother_exhausted(mother_key: str, reason: str = "") -> None:
+    """标记母箱耗尽（OpenAI 侧该 gmail 已满），后续不再对其分裂新别名。已标记则幂等。"""
+    mk = str(mother_key or "").strip().lower()
+    if not mk:
+        return
+    with _gmail_exhausted_lock:
+        state = _load_gmail_exhausted()
+        if mk not in state:
+            state[mk] = {"reason": str(reason or "")[:200], "at": datetime.now(timezone.utc).isoformat()}
+            _save_gmail_exhausted(state)
+
+
+def clear_gmail_exhausted() -> int:
+    """清空所有母箱耗尽标记（重置母箱状态时调用，给误判/限额解除的母箱恢复途径）。返回清除数。"""
+    with _gmail_exhausted_lock:
+        state = _load_gmail_exhausted()
+        count = len(state)
+        if count:
+            _save_gmail_exhausted({})
+        return count
+
+
+def _is_user_already_exists_error(error: Exception | str | None) -> bool:
+    """判断注册失败是否为 OpenAI"该邮箱已存在"（user_already_exists / create_account_http_400 该文案）。"""
+    text = str(error or "").lower()
+    return "user_already_exists" in text or "account already exists for this email" in text
+
+
 def _smsbower_scan_accounts() -> tuple[dict[str, int], dict[str, set[str]]]:
     """扫描已注册账号，返回 (各母箱账号数, 各母箱已用别名集合)。已注册账号是唯一真相源。"""
     usage: dict[str, int] = {}
@@ -2379,15 +2445,23 @@ def smsbower_gmail_pool_stats(pool: list[dict[str, str]] | None = None,
         if mk:
             mother_keys.add(mk)
     usage, _used = _smsbower_scan_accounts()
-    used = sum(usage.get(mk, 0) for mk in mother_keys)
+    exhausted_map = _load_gmail_exhausted()
+    used = 0
+    available = 0
+    exhausted = 0
     in_use = 0
     for mk in mother_keys:
+        u = usage.get(mk, 0)
+        used += u
         lock = _smsbower_mother_locks.get(mk)
         if lock is not None and lock.locked():
             in_use += 1
+        if mk in exhausted_map:
+            exhausted += 1  # OpenAI 侧已满的母箱，剩余额度不计入可用
+        else:
+            available += max(0, per - u)
     mother_count = len(mother_keys)
     total = mother_count * per
-    available = max(0, total - used)
     return {
         "mother_count": mother_count,
         "per_mother": per,
@@ -2397,6 +2471,7 @@ def smsbower_gmail_pool_stats(pool: list[dict[str, str]] | None = None,
         "busy": in_use,
         "available": available,
         "unused": available,
+        "exhausted": exhausted,
         "failed": 0,
         "retryable": 0,
     }
@@ -2423,14 +2498,16 @@ def prune_smsbower_unused_credentials(credentials: list[dict[str, str]]) -> tupl
 def reset_smsbower_pool_state() -> int:
     """重置 smsbower-gmail 母箱状态：清空母箱级内存锁（释放异常残留占用）。
 
-    smsbower 别名不落库、无 used.json 持久状态；唯一运行时状态是母箱串行锁，
-    清锁后 in_use 统计（靠 lock.locked()）归 0。已注册账号（accounts.json）为真相源不受影响。
-    仅在注册任务停止时调用（前端菜单在 enabled 时禁用），故无正在持锁的线程。返回清除的锁数。
+    smsbower 别名不落库、无 used.json 持久状态；运行时状态是母箱串行锁 + 耗尽标记。
+    清锁后 in_use 统计（靠 lock.locked()）归 0；同时清除耗尽标记，给限额解除/误判的母箱恢复途径。
+    已注册账号（accounts.json）为真相源不受影响。仅在注册任务停止时调用（前端菜单在 enabled 时禁用）。
+    返回清除的锁数 + 耗尽标记数之和。
     """
+    cleared_exhausted = clear_gmail_exhausted()
     with _smsbower_locks_guard:
         count = len(_smsbower_mother_locks)
         _smsbower_mother_locks.clear()
-        return count
+        return count + cleared_exhausted
 
 
 class SmsbowerGmailProvider(BaseMailProvider):
@@ -2489,6 +2566,8 @@ class SmsbowerGmailProvider(BaseMailProvider):
             mother_key = _smsbower_mother_key(mother)
             if usage.get(mother_key, 0) >= self.per_mother:
                 continue  # 该母箱名下已满 N 个号，耗尽
+            if is_gmail_mother_exhausted(mother_key):
+                continue  # OpenAI 侧已满（曾报 user_already_exists），不再对此母箱分裂新别名
             lock = _smsbower_get_mother_lock(mother_key)
             if not lock.acquire(blocking=False):
                 continue  # 该母箱正被占用（有别名在注册周期内），换下一个母箱
@@ -2583,7 +2662,7 @@ def smsbower_reauth_finish(mailbox: dict[str, Any]) -> None:
 #   1) 取件 URL 只支持 http（实测 https 连不上），故省略 scheme 时补 http（不是 https）
 #   2) 返回 {"time":"..","code":"succeed","data":"305536"} —— 顶层 code 是状态串(succeed)，
 #      验证码直接在 data 字符串里（不是嵌套对象）。父类 smsbower 会把顶层 code 误当验证码，故重写 _read_all_codes。
-GMCODE_ALIAS_PER_MOTHER = 5  # gmcode 每个母箱可注册的账号数上限（默认 5）
+GMCODE_ALIAS_PER_MOTHER = 7  # gmcode 每个母箱可注册的账号数上限（默认 7）
 
 
 def parse_gmcode_gmail_pool(text: str) -> list[dict[str, str]]:
@@ -2755,6 +2834,9 @@ def mark_mailbox_result(mailbox: dict, *, success: bool, error: Exception | str 
     if provider_name in {SmsbowerGmailProvider.name, GmcodeGmailProvider.name}:
         # smsbower/gmcode-gmail 别名不落库（用已注册账号数控制上限），mark 时只释放母箱串行锁
         mother_key = str(mailbox.get("_smsbower_mother_key") or "")
+        # 注册失败且 OpenAI 报"该邮箱已存在"→ 整个 gmail 母箱在 OpenAI 侧已满，标记耗尽：无论分裂数设多少都不再分裂
+        if not success and mother_key and _is_user_already_exists_error(error):
+            mark_gmail_mother_exhausted(mother_key, str(error or ""))
         if mother_key:
             lock = _smsbower_mother_locks.get(mother_key)
             if lock is not None:
