@@ -110,6 +110,7 @@ DEFAULT_REGISTER_POSTPROCESS = {
     "group_ids": [2],
     "verify_chat_access": True,
     "concurrency": 5,
+    "probe_egress_ip": False,   # 巡检重授权是否探测出口 IP（每号多一次 ipify 请求走代理，默认关省流量/连接）
 }
 
 
@@ -380,6 +381,7 @@ def _normalize_register_postprocess_settings(value: object) -> dict[str, object]
         "group_ids": _normalize_group_ids(source.get("group_ids")),
         "verify_chat_access": _normalize_bool(source.get("verify_chat_access"), True),
         "concurrency": _normalize_concurrency(source.get("concurrency")),
+        "probe_egress_ip": _normalize_bool(source.get("probe_egress_ip"), False),
     }
 
 

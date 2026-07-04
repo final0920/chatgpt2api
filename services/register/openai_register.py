@@ -1070,7 +1070,7 @@ def _probe_egress_ip(session: Any, timeout: float = 8.0) -> str:
     return ""
 
 
-def reauthorize_login(email: str, proxy: str | None = None, index: int = 0) -> dict:
+def reauthorize_login(email: str, proxy: str | None = None, index: int = 0, probe_egress_ip: bool = False) -> dict:
     """用已有账号邮箱走 passwordless 自动重新登录授权，返回新 token 三件套。
 
     面向"异常 401 账号重新授权"：从 outlook007 / smsbower-gmail 接码池找回该 email 的收码入口，复用注册时的
@@ -1089,7 +1089,8 @@ def reauthorize_login(email: str, proxy: str | None = None, index: int = 0) -> d
         mail_provider.smsbower_reauth_prepare(mailbox, _mail_config())  # 母箱串行锁 + baseline，覆盖发码→取码
     registrar = PlatformRegistrar(proxy if proxy is not None else config["proxy"])
     try:
-        egress_ip = _probe_egress_ip(registrar.session)
+        # 出口 IP 探测默认关闭（每号多一次 ipify 请求走代理耗流量/连接），巡检可配置开启用于排查代理
+        egress_ip = _probe_egress_ip(registrar.session) if probe_egress_ip else ""
         registrar._platform_authorize(address, index, screen_hint="login_or_signup")
         tokens = registrar._passwordless_login(address, mailbox, index)
         access_token = str(tokens.get("access_token") or "").strip()

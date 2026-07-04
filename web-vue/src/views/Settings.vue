@@ -723,6 +723,9 @@
             <div class="settings-check-item">
               <Checkbox v-model="localSettings.register_postprocess.verify_chat_access">join 后验证可对话再推送</Checkbox>
             </div>
+            <div class="settings-check-item">
+              <Checkbox v-model="localSettings.register_postprocess.probe_egress_ip">巡检探测出口 IP（每号多一次代理请求，排查代理用，默认关省流量）</Checkbox>
+            </div>
           </div>
           <FormField label="空间 ID 列表 (workspace_ids，逗号分隔，逐个 join 并分别推送)">
             <Input

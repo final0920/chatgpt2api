@@ -152,6 +152,7 @@ class InspectService:
         targets = [str(ws).strip() for ws in workspace_ids if str(ws).strip() and str(ws).strip() not in blocked]
         group_ids = settings.get("group_ids") or [2]
         do_verify = bool(settings.get("verify_chat_access", True))
+        probe_ip = bool(settings.get("probe_egress_ip", False))
         group_id = str(group_ids[0]) if group_ids else "2"
 
         if not base_url or not api_key:
@@ -194,7 +195,7 @@ class InspectService:
             f"[阶段2] ChatGPT2API 号池 {len(local_accounts)} 个：需补推 {len(to_sync)} 个，"
             f"跳过(sub2api 已有) {skipped} 个（线程 {threads}）",
             "info")
-        self._run_stage2(server, to_sync, targets, group_ids, do_verify, threads)
+        self._run_stage2(server, to_sync, targets, group_ids, do_verify, threads, probe_ip)
 
         with self._lock:
             deleted = self._stats.get("deleted", 0)
@@ -237,7 +238,7 @@ class InspectService:
                     self._stats["updated_at"] = _now()
 
     def _run_stage2(self, server: dict, to_sync: list, targets: list,
-                    group_ids: list, do_verify: bool, threads: int) -> None:
+                    group_ids: list, do_verify: bool, threads: int, probe_egress_ip: bool = False) -> None:
         if not to_sync:
             return
         from services.register import openai_register
@@ -258,9 +259,10 @@ class InspectService:
             try:
                 self._append_log(f"[任务{idx}] 开始重新授权：{email}", "info")
                 logger.debug({"event": "inspect_reauth_start", "idx": idx, "email": email})
-                tokens = openai_register.reauthorize_login(email, proxy=(self._proxy_ref or None), index=idx)
+                tokens = openai_register.reauthorize_login(email, proxy=(self._proxy_ref or None), index=idx, probe_egress_ip=probe_egress_ip)
                 egress_ip = str(tokens.get("egress_ip") or "").strip()
-                self._append_log(f"[任务{idx}] 重新授权：{email}  ip:{egress_ip or '未知'}", "info")
+                ip_part = f"  ip:{egress_ip}" if egress_ip else ""
+                self._append_log(f"[任务{idx}] 重新授权：{email}{ip_part}", "info")
                 logger.debug({"event": "inspect_reauth_egress", "idx": idx, "email": email, "egress_ip": egress_ip})
                 updated = account_service.reauthorize_account(old_token, tokens, "inspect")
                 new_token = str(updated.get("access_token") or "")

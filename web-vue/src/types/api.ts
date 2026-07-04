@@ -199,6 +199,7 @@ export interface Settings {
     group_ids: number[]
     verify_chat_access: boolean
     concurrency: number
+    probe_egress_ip: boolean
   }
   proxy_profiles?: Array<{
     id: string

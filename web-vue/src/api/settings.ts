@@ -164,6 +164,7 @@ export function normalizeRegisterPostprocess(raw: unknown): Settings['register_p
     group_ids: groupIds,
     verify_chat_access: boolValue(source.verify_chat_access, true),
     concurrency: numberValue(source.concurrency, 5, 1),
+    probe_egress_ip: boolValue(source.probe_egress_ip, false),
   }
 }
 
