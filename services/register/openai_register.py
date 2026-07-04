@@ -754,7 +754,7 @@ class PlatformRegistrar:
         return code == "invalid_state" or "sign-in session is no longer valid" in message
 
     def _passwordless_login(self, email: str, mailbox: dict, index: int) -> dict:
-        if str(mailbox.get("provider") or "") not in {"outlook_token", "outlook007", "smsbower_gmail", "mailsapi_gmail"}:
+        if str(mailbox.get("provider") or "") not in {"outlook_token", "outlook007", "smsbower_gmail", "gmcode_gmail"}:
             raise RuntimeError("OpenAI 返回登录流，当前邮箱来源无法读取登录验证码")
         step(index, "OpenAI 返回登录流，转入 passwordless 邮箱验证码登录", "yellow")
         for attempt in range(2):
@@ -1034,15 +1034,15 @@ def _find_readable_mailbox_for_email(email: str) -> dict | None:
                     "code_api_url": cred["code_api_url"],
                     "_smsbower_mother_key": mother_l,
                 }
-    # mailsapi-gmail：同 smsbower（gmail 加号别名归一化到母箱反查取件 URL），仅取码结构不同
+    # gmcode-gmail：同 smsbower（gmail 加号别名归一化到母箱反查取件 URL），仅取码结构不同
     for entry in mail_provider._entries(_mail_config()):
-        if str(entry.get("type") or "") != "mailsapi_gmail":
+        if str(entry.get("type") or "") != "gmcode_gmail":
             continue
         provider_ref = str(entry.get("provider_ref") or "")
-        for cred in mail_provider.parse_mailsapi_gmail_pool(str(entry.get("mailboxes") or "")):
+        for cred in mail_provider.parse_gmcode_gmail_pool(str(entry.get("mailboxes") or "")):
             if mail_provider._smsbower_mother_key(str(cred.get("email") or "")) == mother_l:
                 return {
-                    "provider": "mailsapi_gmail",
+                    "provider": "gmcode_gmail",
                     "provider_ref": provider_ref,
                     "address": email,
                     "login_email": cred["email"],
@@ -1082,9 +1082,9 @@ def reauthorize_login(email: str, proxy: str | None = None, index: int = 0) -> d
         raise RuntimeError("账号缺少邮箱，无法自动重新授权")
     mailbox = _find_readable_mailbox_for_email(address)
     if mailbox is None:
-        raise RuntimeError(f"邮箱 {address} 不在 outlook007 / smsbower-gmail / mailsapi-gmail 接码池，无法自动重新授权（请确认该邮箱已导入邮箱池）")
-    # smsbower / mailsapi 同为 gmail 加号别名渠道，reauth 都要走母箱串行锁 + baseline（覆盖发码→取码）
-    is_gmail_alias = str(mailbox.get("provider") or "") in {"smsbower_gmail", "mailsapi_gmail"}
+        raise RuntimeError(f"邮箱 {address} 不在 outlook007 / smsbower-gmail / gmcode-gmail 接码池，无法自动重新授权（请确认该邮箱已导入邮箱池）")
+    # smsbower / gmcode 同为 gmail 加号别名渠道，reauth 都要走母箱串行锁 + baseline（覆盖发码→取码）
+    is_gmail_alias = str(mailbox.get("provider") or "") in {"smsbower_gmail", "gmcode_gmail"}
     if is_gmail_alias:
         mail_provider.smsbower_reauth_prepare(mailbox, _mail_config())  # 母箱串行锁 + baseline，覆盖发码→取码
     registrar = PlatformRegistrar(proxy if proxy is not None else config["proxy"])

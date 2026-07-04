@@ -2085,7 +2085,7 @@ def outlook007_pool_stats(pool: list[dict[str, str]] | None = None) -> dict[str,
     return counts
 
 
-def _parse_outlook007_pool_with_report(text: str, allow_schemeless: bool = False) -> tuple[list[dict[str, str]], dict[str, Any]]:
+def _parse_outlook007_pool_with_report(text: str, allow_schemeless: bool = False, default_scheme: str = "https") -> tuple[list[dict[str, str]], dict[str, Any]]:
     """解析 outlook007 邮箱池文本，每行格式：email----code_api_url（接码链接）。"""
     credentials: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -2114,7 +2114,7 @@ def _parse_outlook007_pool_with_report(text: str, allow_schemeless: bool = False
             continue
         if not (code_api_url.startswith("http://") or code_api_url.startswith("https://")):
             if allow_schemeless and code_api_url and "." in code_api_url:
-                code_api_url = "https://" + code_api_url  # smsbower：取件 URL 允许省略 scheme，默认补 https
+                code_api_url = f"{default_scheme}://" + code_api_url  # 省略 scheme 时按渠道默认补全（smsbower→https，gmcode→http）
             else:
                 report["invalid"] += 1
                 _add_outlook_parse_issue(issues, line_no, "缺少接码链接", email)
@@ -2550,7 +2550,7 @@ def smsbower_reauth_prepare(mailbox: dict[str, Any], mail_config: dict) -> None:
     baseline: list[str] = []
     prov = None
     try:
-        # 按 mailbox 实际渠道创建解析器（smsbower_gmail / mailsapi_gmail 取码 JSON 结构不同），
+        # 按 mailbox 实际渠道创建解析器（smsbower_gmail / gmcode_gmail 取码 JSON 结构不同），
         # 优先用 provider_ref 精确定位到池；provider 名兜底
         provider_name = str(mailbox.get("provider") or "") or SmsbowerGmailProvider.name
         prov = _create_provider(mail_config, provider_name, str(mailbox.get("provider_ref") or ""))
@@ -2576,45 +2576,52 @@ def smsbower_reauth_finish(mailbox: dict[str, Any]) -> None:
             pass
 
 
-# ==================== mailsapi-gmail 接码渠道 ====================
-# 与 smsbower-gmail 完全同构（母邮箱----取件URL，gmail 加号别名，母箱串行 + baseline 差异取码，
-# 别名不落库用已注册账号数控上限），唯一差异是取件 URL 的返回 JSON 结构：
-#   smsbower：{"status":1,"code":"..","all_codes":[..]}          —— 验证码在 all_codes / 顶层 code
-#   mailsapi：{"code":0,"message":"SUCCESS","data":{"code":".."}} —— 顶层 code 是状态码(0=成功)，验证码在 data.code
-# 因此只需继承 SmsbowerGmailProvider 并重写 _read_all_codes，其余领用/取码/锁/池管理全部复用。
+# ==================== gmcode-gmail 接码渠道（api.gmcode.vip）====================
+# 与 smsbower-gmail 同构（母邮箱----取件URL，gmail 加号别名，母箱串行 + baseline 差异取码，
+# 别名不落库用已注册账号数控上限），两处差异：
+#   1) 取件 URL 只支持 http（实测 https 连不上），故省略 scheme 时补 http（不是 https）
+#   2) 返回 {"time":"..","code":"succeed","data":"305536"} —— 顶层 code 是状态串(succeed)，
+#      验证码直接在 data 字符串里（不是嵌套对象）。父类 smsbower 会把顶层 code 误当验证码，故重写 _read_all_codes。
+GMCODE_ALIAS_PER_MOTHER = 5  # gmcode 每个母箱可注册的账号数上限（默认 5）
 
 
-def parse_mailsapi_gmail_pool(text: str) -> list[dict[str, str]]:
-    """母箱池格式与 smsbower-gmail 相同：每行 母邮箱----取件URL。取件 URL 允许省略 scheme（自动补 https）。"""
-    return _parse_outlook007_pool_with_report(text, allow_schemeless=True)[0]
+def parse_gmcode_gmail_pool(text: str) -> list[dict[str, str]]:
+    """母箱池格式：每行 母邮箱----取件URL。gmcode 只支持 http，故省略 scheme 时默认补 http。"""
+    return _parse_outlook007_pool_with_report(text, allow_schemeless=True, default_scheme="http")[0]
 
 
-def inspect_mailsapi_gmail_pool(text: str) -> dict[str, Any]:
-    return _parse_outlook007_pool_with_report(text, allow_schemeless=True)[1]
+def inspect_gmcode_gmail_pool(text: str) -> dict[str, Any]:
+    return _parse_outlook007_pool_with_report(text, allow_schemeless=True, default_scheme="http")[1]
 
 
-def mailsapi_gmail_pool_stats(pool: list[dict[str, str]] | None = None,
-                              per_mother: int = SMSBOWER_ALIAS_PER_MOTHER) -> dict[str, int]:
-    """统计 mailsapi-gmail 母箱池额度。语义与 smsbower 完全一致（母箱数×额度−已注册数），
+def gmcode_gmail_pool_stats(pool: list[dict[str, str]] | None = None,
+                            per_mother: int = GMCODE_ALIAS_PER_MOTHER) -> dict[str, int]:
+    """统计 gmcode-gmail 母箱池额度。语义与 smsbower 完全一致（母箱数×额度−已注册数），
     锁/账号扫描共用同一套（gmail 母箱按 email 归一化，天然隔离），故直接委托。"""
     return smsbower_gmail_pool_stats(pool, per_mother)
 
 
-class MailsapiGmailProvider(SmsbowerGmailProvider):
-    """mailsapi-gmail 接码渠道：与 smsbower-gmail 同构，仅取件 URL 返回结构不同。
+class GmcodeGmailProvider(SmsbowerGmailProvider):
+    """gmcode-gmail 接码渠道（api.gmcode.vip）：与 smsbower-gmail 同构，仅取件 URL 返回结构不同。
 
-    取件 URL 返回 {"code":0,"message":"SUCCESS","data":{"code":"312465"}}：
-    顶层 code 是状态码（0=成功，非验证码！），验证码在 data.code。父类 smsbower 的
-    _read_all_codes 会把顶层 code 误当验证码，故这里必须重写只取 data.code。
-    其余 create_mailbox / wait_for_code / baseline / 母箱锁全部复用父类。
+    取件 URL 返回 {"time":"..","code":"succeed","data":"305536"}：顶层 code 是状态串（succeed），
+    验证码直接在 data 字符串里。父类 smsbower 的 _read_all_codes 会把顶层 code 误当验证码，
+    故这里重写只取 data。其余 create_mailbox / wait_for_code / baseline / 母箱锁全部复用父类。
+    默认每母箱分裂 5 个加号别名（GMCODE_ALIAS_PER_MOTHER，父类 smsbower 默认 7）。
     """
 
-    name = "mailsapi_gmail"
+    name = "gmcode_gmail"
+
+    def __init__(self, entry: dict, conf: dict):
+        super().__init__(entry, conf)
+        # entry 未显式指定 alias_per_email 时用 gmcode 默认 5（父类已按 smsbower 默认 7 赋过，这里覆盖）
+        self.per_mother = _normalize_int(entry.get("alias_per_email"), GMCODE_ALIAS_PER_MOTHER, 1, 200)
 
     def _read_all_codes(self, code_api_url: str) -> tuple[bool, list[str]]:
-        """GET 取件 URL，从 data.code 取验证码，返回 (ok, [code])。ok=False 表示请求/解析失败（可重试）。
+        """GET 取件 URL，从 data 取验证码，返回 (ok, [code])。ok=False 表示请求/解析失败（可重试）。
 
-        mailsapi 每次只返回最新单个验证码，包成单元素列表复用父类 baseline 差异取码逻辑：
+        gmcode 返回 {"time":"..","code":"succeed","data":"305536"}，验证码在 data（字符串），
+        顶层 code 是状态串不能当码。每次只返回最新单码，包成单元素列表复用父类 baseline 差异取码：
         create_mailbox 记录发码前的 code 作 baseline，wait_for_code 等到 code 变化（新码）即返回。
         """
         try:
@@ -2634,10 +2641,10 @@ class MailsapiGmailProvider(SmsbowerGmailProvider):
             return False, []
         inner = data.get("data")
         code = ""
-        if isinstance(inner, dict):
-            code = str(inner.get("code") or "").strip()
-        elif isinstance(inner, str):
-            code = inner.strip()  # 兼容个别接口把 data 直接放验证码字符串
+        if isinstance(inner, str):
+            code = inner.strip()  # gmcode：验证码直接在 data 字符串
+        elif isinstance(inner, dict):
+            code = str(inner.get("code") or "").strip()  # 兼容 data 为对象的变体
         return True, ([code] if code else [])
 
 
@@ -2702,8 +2709,8 @@ def _create_provider(mail_config: dict, provider: str = "", provider_ref: str = 
         return Outlook007Provider(entry, conf)
     if entry["type"] == "smsbower_gmail":
         return SmsbowerGmailProvider(entry, conf)
-    if entry["type"] == "mailsapi_gmail":
-        return MailsapiGmailProvider(entry, conf)
+    if entry["type"] == "gmcode_gmail":
+        return GmcodeGmailProvider(entry, conf)
     raise RuntimeError(f"不支持的 mail.provider: {entry['type']}")
 
 
@@ -2744,8 +2751,8 @@ def mark_mailbox_result(mailbox: dict, *, success: bool, error: Exception | str 
     登录态问题标记 login_required，其余失败标记 failed（可重试但不会自动再次领用）。
     """
     provider_name = str(mailbox.get("provider") or "")
-    if provider_name in {SmsbowerGmailProvider.name, MailsapiGmailProvider.name}:
-        # smsbower/mailsapi-gmail 别名不落库（用已注册账号数控制上限），mark 时只释放母箱串行锁
+    if provider_name in {SmsbowerGmailProvider.name, GmcodeGmailProvider.name}:
+        # smsbower/gmcode-gmail 别名不落库（用已注册账号数控制上限），mark 时只释放母箱串行锁
         mother_key = str(mailbox.get("_smsbower_mother_key") or "")
         if mother_key:
             lock = _smsbower_mother_locks.get(mother_key)
