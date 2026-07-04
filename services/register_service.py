@@ -244,15 +244,14 @@ class RegisterService:
             for provider in old_providers
             if isinstance(provider, dict) and provider.get("type") == "outlook007" and _provider_id(provider)
         }
-        old_smsbower_by_id = {
+        # gmail 母箱池类（smsbower/gmcode 池格式相同：母箱----取码URL）按 id 互通取 old：
+        # 同一 provider 条目在 gmcode/smsbower 间切换 type 时（id 不变），仍能按 id 找回已存池数据，
+        # 避免"切到其他 gmail 池再切回，池数据被空覆盖"的丢数据 bug。
+        gmail_pool_types = ("smsbower_gmail", "gmcode_gmail")
+        old_gmail_pool_by_id = {
             _provider_id(provider): provider
             for provider in old_providers
-            if isinstance(provider, dict) and provider.get("type") == "smsbower_gmail" and _provider_id(provider)
-        }
-        old_gmcode_by_id = {
-            _provider_id(provider): provider
-            for provider in old_providers
-            if isinstance(provider, dict) and provider.get("type") == "gmcode_gmail" and _provider_id(provider)
+            if isinstance(provider, dict) and provider.get("type") in gmail_pool_types and _provider_id(provider)
         }
         old_outlook_by_order = [
             provider
@@ -281,10 +280,10 @@ class RegisterService:
                 continue
             if provider.get("type") == "smsbower_gmail":
                 # smsbower-gmail 母箱池合并：格式同 outlook007，复用其去重逻辑；alias_per_email 不在 pop 列表内故保留
-                old_sms = old_smsbower_by_id.get(_provider_id(provider)) or {}
-                if not old_sms and index < len(old_providers) and isinstance(old_providers[index], dict) and old_providers[index].get("type") == "smsbower_gmail":
+                old_sms = old_gmail_pool_by_id.get(_provider_id(provider)) or {}
+                if not old_sms and index < len(old_providers) and isinstance(old_providers[index], dict) and old_providers[index].get("type") in gmail_pool_types:
                     old_sms = old_providers[index]
-                old_text = str(old_sms.get("mailboxes") or "") if old_sms.get("type") == "smsbower_gmail" else ""
+                old_text = str(old_sms.get("mailboxes") or "") if old_sms.get("type") in gmail_pool_types else ""
                 new_text = str(provider.get("mailboxes") or "")
                 if new_text.strip():
                     provider["mailboxes"] = _merge_smsbower_gmail_pool(old_text, new_text)
@@ -297,10 +296,10 @@ class RegisterService:
                 continue
             if provider.get("type") == "gmcode_gmail":
                 # gmcode-gmail 母箱池合并：格式同 smsbower，复用去重逻辑；alias_per_email 不在 pop 列表内故保留
-                old_gmcode = old_gmcode_by_id.get(_provider_id(provider)) or {}
-                if not old_gmcode and index < len(old_providers) and isinstance(old_providers[index], dict) and old_providers[index].get("type") == "gmcode_gmail":
+                old_gmcode = old_gmail_pool_by_id.get(_provider_id(provider)) or {}
+                if not old_gmcode and index < len(old_providers) and isinstance(old_providers[index], dict) and old_providers[index].get("type") in gmail_pool_types:
                     old_gmcode = old_providers[index]
-                old_text = str(old_gmcode.get("mailboxes") or "") if old_gmcode.get("type") == "gmcode_gmail" else ""
+                old_text = str(old_gmcode.get("mailboxes") or "") if old_gmcode.get("type") in gmail_pool_types else ""
                 new_text = str(provider.get("mailboxes") or "")
                 if new_text.strip():
                     provider["mailboxes"] = _merge_gmcode_gmail_pool(old_text, new_text)
