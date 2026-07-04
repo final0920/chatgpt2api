@@ -964,8 +964,8 @@ def worker(index: int) -> dict:
         refresh_result = account_service.refresh_accounts([access_token])
         if refresh_result.get("errors"):
             step(index, f"账号已保存，刷新状态暂未成功，稍后可重试: {refresh_result['errors']}", "yellow")
-        # 注册后处理：仅 outlook007 渠道账号，自动 join 空间 + 转 sub2api + 推送(开关在系统设置基础设置)
-        if str(result.get("mail_provider") or "") == "outlook007":
+        # 注册后处理：接码类渠道账号自动 join 空间 + 转 sub2api + 推送(开关在系统设置基础设置)
+        if str(result.get("mail_provider") or "") in {"outlook007", "smsbower_gmail", "gmcode_gmail"}:
             try:
                 from services.register.postprocess import run_postprocess
                 pp = run_postprocess(result)
