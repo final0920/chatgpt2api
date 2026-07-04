@@ -729,6 +729,68 @@
                     </div>
                   </details>
                 </div>
+
+                <div v-if="providerType(provider) === 'mailsapi_gmail'" class="register-provider-section register-provider-section--soft">
+                  <div class="register-provider-section-title">Mailsapi Gmail 接码池</div>
+
+                  <label class="register-field">
+                    <span class="register-label">母邮箱池导入</span>
+                    <textarea
+                      class="register-textarea register-textarea--tall"
+                      :disabled="registerConfig.enabled"
+                      :value="String(provider.mailboxes || '')"
+                      placeholder="每行一个：Gmail母邮箱----取件链接"
+                      @input="updateProviderField(index, 'mailboxes', ($event.target as HTMLTextAreaElement).value)"
+                    ></textarea>
+                  </label>
+
+                  <label class="register-field">
+                    <span class="register-label">每个母邮箱可接码次数（加号别名数）</span>
+                    <Input
+                      v-model.number="provider.alias_per_email"
+                      type="number"
+                      min="1"
+                      max="200"
+                      :disabled="registerConfig.enabled"
+                    />
+                  </label>
+
+                  <div class="register-outlook-toolbar">
+                    <div class="register-outlook-summary">
+                      <MetaChip size="xs" tone="success">可用 {{ outlookPoolSummary(provider).available }}</MetaChip>
+                      <MetaChip size="xs" tone="muted">母箱 {{ outlookPoolSummary(provider).saved }}</MetaChip>
+                      <MetaChip size="xs" tone="muted">已用 {{ outlookPoolSummary(provider).used }}</MetaChip>
+                      <MetaChip size="xs" :tone="outlookPoolSummary(provider).inUse ? 'warning' : 'muted'">
+                        占用 {{ outlookPoolSummary(provider).inUse }}
+                      </MetaChip>
+                      <MetaChip v-if="outlookPoolSummary(provider).pending" size="xs" tone="info">
+                        待保存 {{ outlookPoolSummary(provider).pending }}
+                      </MetaChip>
+                    </div>
+
+                    <FloatingActionMenu
+                      label="更多维护"
+                      :items="mailsapiPoolActionItems"
+                      :disabled="registerConfig.enabled || legacySaving"
+                      align="right"
+                      placement="auto"
+                      :trigger-min-width="96"
+                      @select="handleMailsapiPoolAction"
+                    />
+                  </div>
+
+                  <p class="register-preview-line">{{ mailsapiGmailPoolHint(provider) }}</p>
+                  <details class="register-outlook-details">
+                    <summary>母箱池详情</summary>
+                    <div class="register-outlook-detail-chips">
+                      <MetaChip size="xs" tone="muted">母箱数 {{ outlookPoolSummary(provider).saved }}</MetaChip>
+                      <MetaChip size="xs" tone="muted">每箱额度 {{ numeric(provider.alias_per_email) || 7 }}</MetaChip>
+                      <MetaChip size="xs" tone="success">总额度 {{ outlookPoolSummary(provider).available + outlookPoolSummary(provider).used }}</MetaChip>
+                      <MetaChip size="xs" tone="muted">已注册占用 {{ outlookPoolSummary(provider).used }}</MetaChip>
+                      <MetaChip size="xs" tone="info">待保存 {{ outlookPoolSummary(provider).pending }}</MetaChip>
+                    </div>
+                  </details>
+                </div>
               </FormSection>
             </div>
           </FormSection>
@@ -801,6 +863,7 @@ import { useToast } from '@/composables/useToast'
 type RegisterMode = 'total' | 'quota' | 'available'
 type OutlookResetScope = 'all' | 'retryable' | 'invalid' | 'unused'
 type SmsbowerResetScope = 'smsbower_unused' | 'smsbower_reset'
+type MailsapiResetScope = 'mailsapi_unused' | 'mailsapi_reset'
 type RegisterProxyMode = 'global' | 'direct' | 'group' | 'custom'
 type GptMailStatusState = {
   loading: boolean
@@ -890,6 +953,7 @@ const providerTypeOptions = [
   { value: 'outlook_token', label: 'Microsoft 邮箱凭据池' },
   { value: 'outlook007', label: 'Outlook007 接码池' },
   { value: 'smsbower_gmail', label: 'Smsbower Gmail 接码池' },
+  { value: 'mailsapi_gmail', label: 'Mailsapi Gmail 接码池' },
 ]
 const providerTypeGroups = [{ options: providerTypeOptions }]
 
@@ -923,6 +987,10 @@ const smsbowerPoolActionItems: ActionMenuItem[] = [
   { key: 'smsbower_unused', label: '删除未使用母箱', danger: true },
   { key: 'smsbower_reset', label: '重置母箱状态', danger: true, dividerBefore: true },
 ]
+const mailsapiPoolActionItems: ActionMenuItem[] = [
+  { key: 'mailsapi_unused', label: '删除未使用母箱', danger: true },
+  { key: 'mailsapi_reset', label: '重置母箱状态', danger: true, dividerBefore: true },
+]
 const providerCommonKeys = ['id', 'enable', 'type', 'label'] as const
 const providerTypeKeys: Record<string, string[]> = {
   cloudmail_gen: ['api_base', 'admin_email', 'admin_password', 'domain', 'subdomain', 'email_prefix'],
@@ -937,11 +1005,13 @@ const providerTypeKeys: Record<string, string[]> = {
   outlook_token: ['mailboxes', 'mode', 'imap_host', 'message_limit', 'alias_enabled', 'alias_per_email', 'alias_prefix', 'alias_include_original'],
   outlook007: ['mailboxes'],
   smsbower_gmail: ['mailboxes', 'alias_per_email'],
+  mailsapi_gmail: ['mailboxes', 'alias_per_email'],
 }
 const providerLocalOnlyKeys: Record<string, string[]> = {
   outlook_token: ['mailboxes_count', 'mailboxes_base_count', 'mailboxes_alias_count', 'mailboxes_preview', 'mailboxes_stats', 'mailboxes_parse_stats'],
   outlook007: ['mailboxes_count', 'mailboxes_base_count', 'mailboxes_alias_count', 'mailboxes_preview', 'mailboxes_stats', 'mailboxes_parse_stats'],
   smsbower_gmail: ['mailboxes_count', 'mailboxes_base_count', 'mailboxes_alias_count', 'mailboxes_preview', 'mailboxes_stats', 'mailboxes_parse_stats'],
+  mailsapi_gmail: ['mailboxes_count', 'mailboxes_base_count', 'mailboxes_alias_count', 'mailboxes_preview', 'mailboxes_stats', 'mailboxes_parse_stats'],
 }
 
 const registerProviders = computed(() => registerConfig.value?.mail.providers || [])
@@ -1086,6 +1156,8 @@ function defaultProvider(type = 'cloudmail_gen'): RegisterProvider {
     case 'outlook007':
       return { ...base, mailboxes: '' }
     case 'smsbower_gmail':
+      return { ...base, mailboxes: '', alias_per_email: 7 }
+    case 'mailsapi_gmail':
       return { ...base, mailboxes: '', alias_per_email: 7 }
     default:
       return base
@@ -1237,6 +1309,11 @@ function providerRequirementMessages(provider: RegisterProvider) {
       if (savedCount <= 0 && pendingOutlookCount(provider) <= 0) missing.push('Smsbower Gmail 接码池')
       break
     }
+    case 'mailsapi_gmail': {
+      const savedCount = Number(provider.mailboxes_count || 0)
+      if (savedCount <= 0 && pendingOutlookCount(provider) <= 0) missing.push('Mailsapi Gmail 接码池')
+      break
+    }
     default:
       break
   }
@@ -1328,7 +1405,7 @@ function numeric(value: unknown) {
 
 function pendingOutlookCount(provider: RegisterProvider) {
   const poolType = providerType(provider)
-  const minSegments = (poolType === 'outlook007' || poolType === 'smsbower_gmail') ? 2 : 4
+  const minSegments = (poolType === 'outlook007' || poolType === 'smsbower_gmail' || poolType === 'mailsapi_gmail') ? 2 : 4
   return String(provider.mailboxes || '')
     .split(/\r?\n/)
     .map(line => line.trim())
@@ -1416,6 +1493,15 @@ function smsbowerGmailPoolHint(provider: RegisterProvider) {
   const per = numeric(provider.alias_per_email) || 7
   if (pending > 0) return `有 ${pending} 个母邮箱待保存，保存后每个母箱可接 ${per} 次码（${per} 个加号别名）。`
   if (saved <= 0) return '还没有导入 Smsbower Gmail 母邮箱。'
+  return `已保存 ${saved} 个母邮箱，每个母箱可接 ${per} 次码，约 ${saved * per} 个可注册别名。`
+}
+
+function mailsapiGmailPoolHint(provider: RegisterProvider) {
+  const saved = numeric(provider.mailboxes_count)
+  const pending = pendingOutlookCount(provider)
+  const per = numeric(provider.alias_per_email) || 7
+  if (pending > 0) return `有 ${pending} 个母邮箱待保存，保存后每个母箱可接 ${per} 次码（${per} 个加号别名）。`
+  if (saved <= 0) return '还没有导入 Mailsapi Gmail 母邮箱。'
   return `已保存 ${saved} 个母邮箱，每个母箱可接 ${per} 次码，约 ${saved * per} 个可注册别名。`
 }
 
@@ -1656,6 +1742,12 @@ function handleSmsbowerPoolAction(key: string) {
   }
 }
 
+function handleMailsapiPoolAction(key: string) {
+  if (key === 'mailsapi_unused' || key === 'mailsapi_reset') {
+    void resetMailsapiPool(key)
+  }
+}
+
 async function resetSmsbowerPool(scope: SmsbowerResetScope) {
   const copy: Record<SmsbowerResetScope, { title: string; message: string; confirmText: string }> = {
     smsbower_unused: {
@@ -1664,6 +1756,33 @@ async function resetSmsbowerPool(scope: SmsbowerResetScope) {
       confirmText: '删除',
     },
     smsbower_reset: {
+      title: '重置母箱状态',
+      message: '清空母箱级串行锁（释放异常/残留占用），占用统计会归零。已注册账号不受影响。',
+      confirmText: '重置',
+    },
+  }
+  const ok = await confirmDialog.ask(copy[scope])
+  if (!ok) return
+  legacySaving.value = true
+  try {
+    const response = await registerApi.resetOutlookPool(scope)
+    applyRegisterConfig(response.register)
+    toast.success('母箱池状态已更新')
+  } catch (error: any) {
+    toast.error(error?.message || '更新母箱池状态失败')
+  } finally {
+    legacySaving.value = false
+  }
+}
+
+async function resetMailsapiPool(scope: MailsapiResetScope) {
+  const copy: Record<MailsapiResetScope, { title: string; message: string; confirmText: string }> = {
+    mailsapi_unused: {
+      title: '删除未使用母箱',
+      message: '从已保存母箱池中移除还没有产出任何注册账号的母箱（以号池已注册账号为准）。已产出账号的母箱会保留。',
+      confirmText: '删除',
+    },
+    mailsapi_reset: {
       title: '重置母箱状态',
       message: '清空母箱级串行锁（释放异常/残留占用），占用统计会归零。已注册账号不受影响。',
       confirmText: '重置',

@@ -57,6 +57,16 @@ def _merge_smsbower_gmail_pool(old_text: str, new_text: str) -> str:
     return _serialize_outlook007_pool(list(merged.values()))
 
 
+def _merge_mailsapi_gmail_pool(old_text: str, new_text: str) -> str:
+    """合并 mailsapi-gmail 母箱池，按母箱去重；格式与 smsbower 相同（取件 URL 可省略 scheme）。"""
+    merged: dict[str, dict] = {}
+    for credential in mail_provider.parse_mailsapi_gmail_pool(old_text or ""):
+        merged[credential["email"].strip().lower()] = credential
+    for credential in mail_provider.parse_mailsapi_gmail_pool(new_text or ""):
+        merged[credential["email"].strip().lower()] = credential
+    return _serialize_outlook007_pool(list(merged.values()))
+
+
 def _outlook_credential_changed(old: dict | None, new: dict) -> bool:
     if not old:
         return False
@@ -180,6 +190,22 @@ class RegisterService:
                     per_m = mail_provider.SMSBOWER_ALIAS_PER_MOTHER
                 provider["mailboxes_stats"] = mail_provider.smsbower_gmail_pool_stats(credentials, per_m)
                 continue
+            if provider.get("type") == "mailsapi_gmail":
+                # mailsapi-gmail 母箱池：格式/统计与 smsbower 完全一致（邮箱----取件URL，别名不落库），保留 alias_per_email
+                pool_text = str(provider.get("mailboxes") or "")
+                credentials = mail_provider.parse_mailsapi_gmail_pool(pool_text)
+                provider["mailboxes"] = ""
+                provider["mailboxes_count"] = len(credentials)
+                provider["mailboxes_base_count"] = len(credentials)
+                provider["mailboxes_alias_count"] = 0
+                provider["mailboxes_preview"] = [self._mask_email(c["email"]) for c in credentials]
+                provider["mailboxes_parse_stats"] = mail_provider.inspect_mailsapi_gmail_pool(pool_text)
+                try:
+                    per_m = int(provider.get("alias_per_email"))
+                except (TypeError, ValueError):
+                    per_m = mail_provider.SMSBOWER_ALIAS_PER_MOTHER
+                provider["mailboxes_stats"] = mail_provider.mailsapi_gmail_pool_stats(credentials, per_m)
+                continue
             if provider.get("type") != "outlook_token":
                 continue
             pool_text = str(provider.get("mailboxes") or "")
@@ -223,6 +249,11 @@ class RegisterService:
             for provider in old_providers
             if isinstance(provider, dict) and provider.get("type") == "smsbower_gmail" and _provider_id(provider)
         }
+        old_mailsapi_by_id = {
+            _provider_id(provider): provider
+            for provider in old_providers
+            if isinstance(provider, dict) and provider.get("type") == "mailsapi_gmail" and _provider_id(provider)
+        }
         old_outlook_by_order = [
             provider
             for provider in old_providers
@@ -259,6 +290,22 @@ class RegisterService:
                     provider["mailboxes"] = _merge_smsbower_gmail_pool(old_text, new_text)
                 elif old_text:
                     provider["mailboxes"] = _merge_smsbower_gmail_pool(old_text, "")
+                else:
+                    provider["mailboxes"] = ""
+                for key in ("mailboxes_count", "mailboxes_base_count", "mailboxes_alias_count", "mailboxes_preview", "mailboxes_stats", "mailboxes_parse_stats"):
+                    provider.pop(key, None)
+                continue
+            if provider.get("type") == "mailsapi_gmail":
+                # mailsapi-gmail 母箱池合并：格式同 smsbower，复用去重逻辑；alias_per_email 不在 pop 列表内故保留
+                old_mailsapi = old_mailsapi_by_id.get(_provider_id(provider)) or {}
+                if not old_mailsapi and index < len(old_providers) and isinstance(old_providers[index], dict) and old_providers[index].get("type") == "mailsapi_gmail":
+                    old_mailsapi = old_providers[index]
+                old_text = str(old_mailsapi.get("mailboxes") or "") if old_mailsapi.get("type") == "mailsapi_gmail" else ""
+                new_text = str(provider.get("mailboxes") or "")
+                if new_text.strip():
+                    provider["mailboxes"] = _merge_mailsapi_gmail_pool(old_text, new_text)
+                elif old_text:
+                    provider["mailboxes"] = _merge_mailsapi_gmail_pool(old_text, "")
                 else:
                     provider["mailboxes"] = ""
                 for key in ("mailboxes_count", "mailboxes_base_count", "mailboxes_alias_count", "mailboxes_preview", "mailboxes_stats", "mailboxes_parse_stats"):
@@ -344,6 +391,26 @@ class RegisterService:
                 provider.pop(key, None)
         return total_removed
 
+    def _prune_unused_mailsapi_pools(self) -> int:
+        mail = self._config.get("mail")
+        if not isinstance(mail, dict):
+            return 0
+        providers = mail.get("providers")
+        if not isinstance(providers, list):
+            return 0
+        total_removed = 0
+        for provider in providers:
+            if not isinstance(provider, dict) or provider.get("type") != "mailsapi_gmail":
+                continue
+            credentials = mail_provider.parse_mailsapi_gmail_pool(str(provider.get("mailboxes") or ""))
+            kept, removed = mail_provider.prune_smsbower_unused_credentials(credentials)  # 判定逻辑通用（按母箱在号池产出数）
+            if removed:
+                provider["mailboxes"] = _serialize_outlook007_pool(kept)
+                total_removed += removed
+            for key in ("mailboxes_count", "mailboxes_base_count", "mailboxes_alias_count", "mailboxes_preview", "mailboxes_stats", "mailboxes_parse_stats"):
+                provider.pop(key, None)
+        return total_removed
+
     def update(self, updates: dict) -> dict:
         with self._lock:
             self._merge_outlook_pools(updates)
@@ -403,6 +470,18 @@ class RegisterService:
                 else:
                     cleared = mail_provider.reset_smsbower_pool_state()
                     self._append_log(f"已重置 smsbower-gmail 母箱状态，释放 {cleared} 个母箱锁", "yellow")
+            return self.get()
+        if scope in {"mailsapi_unused", "mailsapi_reset"}:
+            # mailsapi-gmail 母箱池维护：语义与 smsbower 完全一致（删无注册产出母箱 / 清母箱锁，锁字典共用）
+            with self._lock:
+                if scope == "mailsapi_unused":
+                    removed = self._prune_unused_mailsapi_pools()
+                    openai_register.config.update({k: self._config[k] for k in ("mail", "proxy", "total", "threads")})
+                    self._save()
+                    self._append_log(f"已删除 mailsapi-gmail 未使用母箱（无注册产出），移除 {removed} 个", "yellow")
+                else:
+                    cleared = mail_provider.reset_smsbower_pool_state()
+                    self._append_log(f"已重置 mailsapi-gmail 母箱状态，释放 {cleared} 个母箱锁", "yellow")
             return self.get()
         if scope == "unused":
             with self._lock:

@@ -147,7 +147,7 @@ export const registerApi = {
   resetLegacy() {
     return apiClient.post<any, { register: LegacyRegisterConfig }>('/api/register/reset')
   },
-  resetOutlookPool(scope: 'all' | 'retryable' | 'invalid' | 'unused' | 'failed' | 'smsbower_unused' | 'smsbower_reset' = 'all') {
+  resetOutlookPool(scope: 'all' | 'retryable' | 'invalid' | 'unused' | 'failed' | 'smsbower_unused' | 'smsbower_reset' | 'mailsapi_unused' | 'mailsapi_reset' = 'all') {
     return apiClient.post<any, { register: LegacyRegisterConfig }>('/api/register/outlook-pool/reset', { scope })
   },
   getGptMailStatus(provider: RegisterProvider, force = true) {
