@@ -2107,7 +2107,8 @@ def _parse_outlook007_pool_with_report(text: str, allow_schemeless: bool = False
         # 用 partition 只在第一个 ---- 处切分：接码链接里含 = 与 &，但不含连续 ----
         head, _, tail = line.partition("----")
         email = _clean_outlook_value(head)
-        code_api_url = _clean_outlook_value(tail)
+        # 容忍分隔符多打的横线（如误打 5 个 "-----"，partition 吃掉前 4 个后 tail 残留前导 "-"），去掉后再解析
+        code_api_url = _clean_outlook_value(tail).lstrip("-").strip()
         if "@" not in email:
             report["invalid"] += 1
             _add_outlook_parse_issue(issues, line_no, "邮箱格式不正确", email)
