@@ -102,7 +102,9 @@ DEFAULT_THIRD_PARTY_APPS = {
 # 放系统设置的基础设置里一处配齐；api_key 明文存 config.json（与 auth-key 同级，勿入库/commit）。
 DEFAULT_REGISTER_POSTPROCESS = {
     "enabled": False,
-    "workspace_id": "631e1603-06cf-4f0b-b79b-d09fbfcfe98d",
+    "workspace_id": "631e1603-06cf-4f0b-b79b-d09fbfcfe98d",  # 兼容旧单空间配置（workspace_ids 空时回退用它）
+    "workspace_ids": [],           # 多空间：逐个 join + 各自 account_id 分别推 sub2api（空则回退 workspace_id）
+    "blocked_workspace_ids": [],   # 屏蔽空间：巡检/注册都不 join、不推送（即使写进 workspace_ids 也跳过）
     "sub2api_base_url": "",
     "sub2api_api_key": "",
     "group_ids": [2],
@@ -336,6 +338,22 @@ def _normalize_group_ids(value: object) -> list[int]:
     return normalized
 
 
+def _normalize_workspace_ids(value: object) -> list[str]:
+    """归一化 workspace id 列表：去空白/去重/保序。接受列表，或换行/逗号/空格分隔的字符串。"""
+    if isinstance(value, str):
+        items: object = value.replace(",", " ").split()
+    elif isinstance(value, (list, tuple)):
+        items = value
+    else:
+        items = []
+    result: list[str] = []
+    for item in items:  # type: ignore[assignment]
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
 def _normalize_concurrency(value: object) -> int:
     """归一化 sub2api 推送并发（账号 concurrency 属性）：缺省/非法回退 5，范围 1~1000。"""
     try:
@@ -346,11 +364,17 @@ def _normalize_concurrency(value: object) -> int:
 
 def _normalize_register_postprocess_settings(value: object) -> dict[str, object]:
     source = value if isinstance(value, dict) else {}
+    workspace_id = str(
+        source.get("workspace_id") or DEFAULT_REGISTER_POSTPROCESS["workspace_id"]
+    ).strip()
+    workspace_ids = _normalize_workspace_ids(source.get("workspace_ids"))
+    if not workspace_ids and workspace_id:
+        workspace_ids = [workspace_id]  # 兼容旧单空间配置：workspace_ids 空则回退用 workspace_id
     return {
         "enabled": _normalize_bool(source.get("enabled"), False),
-        "workspace_id": str(
-            source.get("workspace_id") or DEFAULT_REGISTER_POSTPROCESS["workspace_id"]
-        ).strip(),
+        "workspace_id": workspace_id,
+        "workspace_ids": workspace_ids,
+        "blocked_workspace_ids": _normalize_workspace_ids(source.get("blocked_workspace_ids")),
         "sub2api_base_url": str(source.get("sub2api_base_url") or "").strip().rstrip("/"),
         "sub2api_api_key": str(source.get("sub2api_api_key") or "").strip(),
         "group_ids": _normalize_group_ids(source.get("group_ids")),

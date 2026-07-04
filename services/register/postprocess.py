@@ -55,12 +55,14 @@ def _jwt_payload(token: str) -> dict:
         return {}
 
 
-def build_sub2api_account(account: dict, info: dict, group_ids: list[int], concurrency: int = 5) -> dict:
+def build_sub2api_account(account: dict, info: dict, group_ids: list[int], concurrency: int = 5,
+                          workspace_id: str = "") -> dict:
     """把一个账号组装成 sub2api BatchCreate 结构（= 参考文件账号结构 + 顶层 group_ids）。
 
     account: 号池账号 dict（access_token / refresh_token / id_token / email / user_id ...）
     info: verify_workspace_access 结果（account_id / plan_type / organization_id），可为空
     group_ids: 归入的 sub2api 分组 id 列表（如 [2]）
+    workspace_id: 非空时账号 name = email+workspace_id（一个号加入多空间时区分，避免 sub2api 重名覆盖）
     """
     access_token = str(account.get("access_token") or "")
     payload = _jwt_payload(access_token)
@@ -75,8 +77,9 @@ def build_sub2api_account(account: dict, info: dict, group_ids: list[int], concu
     plan_type = str(info.get("plan_type") or "").strip() or str(auth_claim.get("chatgpt_plan_type") or "").strip()
     organization_id = str(info.get("organization_id") or "").strip()
 
+    sub_name = f"{email}+{workspace_id}" if workspace_id else email
     return {
-        "name": email,
+        "name": sub_name,
         "platform": "openai",
         "type": "oauth",
         "credentials": {
@@ -118,20 +121,24 @@ def run_postprocess(result: dict) -> dict:
     if not settings.get("enabled"):
         return {"ok": False, "skipped": True, "reason": "disabled"}
 
-    workspace_id = str(settings.get("workspace_id") or "").strip()
+    # 多空间：workspace_ids 逐个 join+推送；blocked_workspace_ids 里的空间跳过（不 join 不推送）
+    workspace_ids = settings.get("workspace_ids") or []
+    blocked = {str(w).strip() for w in (settings.get("blocked_workspace_ids") or []) if str(w).strip()}
+    targets = [str(ws).strip() for ws in workspace_ids if str(ws).strip() and str(ws).strip() not in blocked]
     base_url = str(settings.get("sub2api_base_url") or "").strip()
     api_key = str(settings.get("sub2api_api_key") or "").strip()
     group_ids = settings.get("group_ids") or []
     do_verify = bool(settings.get("verify_chat_access", True))
+    concurrency = int(settings.get("concurrency") or 5)
 
-    if not workspace_id:
-        logger.warning(f"注册后处理跳过: email={email}, 原因=未配置空间id")
+    if not targets:
+        logger.warning(f"注册后处理跳过: email={email}, 原因=无可用空间(未配置或全部被屏蔽)")
         return {"ok": False, "skipped": True, "reason": "no_workspace_id"}
     if not base_url or not api_key:
         logger.warning(f"注册后处理跳过: email={email}, 原因=sub2api未配置(地址/密钥)")
         return {"ok": False, "skipped": True, "reason": "sub2api_not_configured"}
 
-    logger.info(f"注册后处理开始: email={email}, workspace={workspace_id}")
+    logger.info(f"注册后处理开始: email={email}, 空间数={len(targets)}, 屏蔽={len(blocked)}")
 
     try:
         # ① 取当前有效 token（refresh_accounts 可能已轮换，不能用注册时旧值）
@@ -151,31 +158,33 @@ def run_postprocess(result: dict) -> dict:
 
         client = OpenAIBackendAPI(access_token)
 
-        # ② join 母号空间
-        logger.debug({"event": "register_postprocess_join_request", "email": email, "workspace": workspace_id})
-        join_result = client.request_workspace_invite(workspace_id)
-        logger.debug({"event": "register_postprocess_join_response", "email": email, "result": join_result})
-        logger.info(f"注册后处理 join 空间成功: email={email}")
+        # ②③④ 逐个空间 join + verify(拿各自 account_id) + 组装(同 token / 各自 account_id / name=email+空间)
+        # 单个空间失败只跳过该空间、不影响其它；屏蔽空间已在 targets 里排除
+        sub2api_accounts: list[dict] = []
+        for ws in targets:
+            try:
+                logger.debug({"event": "register_postprocess_join_request", "email": email, "workspace": ws})
+                join_result = client.request_workspace_invite(ws)
+                logger.debug({"event": "register_postprocess_join_response", "email": email, "workspace": ws, "result": join_result})
+                info: dict[str, Any] = {}
+                if do_verify:
+                    info = client.verify_workspace_access(ws)
+                    logger.debug({"event": "register_postprocess_verify", "email": email, "workspace": ws, "info": info})
+                acct = build_sub2api_account(account, info, group_ids, concurrency, workspace_id=ws)
+                sub2api_accounts.append(acct)
+                logger.info(f"注册后处理 join+组装成功: email={email}, workspace={ws}")
+            except Exception as ws_exc:
+                logger.warning(f"注册后处理 空间处理失败(跳过该空间): email={email}, workspace={ws}, error={type(ws_exc).__name__}: {ws_exc}")
+                logger.debug({"event": "register_postprocess_workspace_error", "email": email, "workspace": ws, "error": repr(ws_exc)})
 
-        # ③ 验证可对话，拿 workspace 的 account_id / plan / org
-        info: dict[str, Any] = {}
-        if do_verify:
-            info = client.verify_workspace_access(workspace_id)
-            logger.debug({"event": "register_postprocess_verify", "email": email, "info": info})
+        if not sub2api_accounts:
+            logger.warning(f"注册后处理失败: email={email}, 所有空间 join/组装均失败，无推送")
+            return {"ok": False, "reason": "all_workspaces_failed"}
 
-        # ④ 组装 sub2api 结构（+ 顶层 group_ids）
-        sub2api_account = build_sub2api_account(account, info, group_ids, int(settings.get("concurrency") or 5))
-        logger.debug({
-            "event": "register_postprocess_push_request",
-            "email": email,
-            "group_ids": group_ids,
-            "chatgpt_account_id": sub2api_account["credentials"].get("chatgpt_account_id"),
-            "plan_type": sub2api_account["credentials"].get("plan_type"),
-        })
-
-        # ⑤ 推送到 sub2api（BatchCreate）
+        # ⑤ 一次推送所有空间账号到 sub2api（BatchCreate，共享 group_ids）
         server = {"base_url": base_url, "api_key": api_key}
-        push_result = push_accounts_batch(server, [sub2api_account])
+        logger.debug({"event": "register_postprocess_push_request", "email": email, "count": len(sub2api_accounts), "group_ids": group_ids})
+        push_result = push_accounts_batch(server, sub2api_accounts)
         logger.debug({"event": "register_postprocess_push_response", "email": email, "result": push_result})
 
         success = int(push_result.get("success") or 0) if isinstance(push_result, dict) else 0
@@ -184,7 +193,7 @@ def run_postprocess(result: dict) -> dict:
             logger.warning(f"注册后处理推送 sub2api 失败: email={email}, resp={push_result}")
             return {"ok": False, "reason": "push_failed", "push_result": push_result}
 
-        logger.info(f"注册后处理已推送 sub2api: email={email}, group_ids={group_ids}")
+        logger.info(f"注册后处理已推送 sub2api: email={email}, 空间数={len(sub2api_accounts)}, group_ids={group_ids}")
         return {"ok": True, "push_result": push_result}
     except Exception as exc:
         logger.warning(f"注册后处理失败: email={email}, error={type(exc).__name__}: {exc}")

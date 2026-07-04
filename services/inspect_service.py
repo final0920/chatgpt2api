@@ -147,7 +147,9 @@ class InspectService:
         settings = config.get_register_postprocess_settings()
         base_url = str(settings.get("sub2api_base_url") or "").strip()
         api_key = str(settings.get("sub2api_api_key") or "").strip()
-        workspace_id = str(settings.get("workspace_id") or "").strip()
+        workspace_ids = settings.get("workspace_ids") or []
+        blocked = {str(w).strip() for w in (settings.get("blocked_workspace_ids") or []) if str(w).strip()}
+        targets = [str(ws).strip() for ws in workspace_ids if str(ws).strip() and str(ws).strip() not in blocked]
         group_ids = settings.get("group_ids") or [2]
         do_verify = bool(settings.get("verify_chat_access", True))
         group_id = str(group_ids[0]) if group_ids else "2"
@@ -155,8 +157,8 @@ class InspectService:
         if not base_url or not api_key:
             self._append_log("sub2api 未配置（请到 系统设置→注册入库 填地址/密钥），巡检中止", "red")
             return
-        if not workspace_id:
-            self._append_log("未配置空间 id，巡检中止", "red")
+        if not targets:
+            self._append_log("未配置可用空间 id（未配置或全部被屏蔽），巡检中止", "red")
             return
 
         server = {"base_url": base_url, "api_key": api_key, "group_id": group_id}
@@ -192,7 +194,7 @@ class InspectService:
             f"[阶段2] ChatGPT2API 号池 {len(local_accounts)} 个：需补推 {len(to_sync)} 个，"
             f"跳过(sub2api 已有) {skipped} 个（线程 {threads}）",
             "info")
-        self._run_stage2(server, to_sync, workspace_id, group_ids, do_verify, threads)
+        self._run_stage2(server, to_sync, targets, group_ids, do_verify, threads)
 
         with self._lock:
             deleted = self._stats.get("deleted", 0)
@@ -234,7 +236,7 @@ class InspectService:
                         self._stats["total_deleted"] = self._stats.get("total_deleted", 0) + 1
                     self._stats["updated_at"] = _now()
 
-    def _run_stage2(self, server: dict, to_sync: list, workspace_id: str,
+    def _run_stage2(self, server: dict, to_sync: list, targets: list,
                     group_ids: list, do_verify: bool, threads: int) -> None:
         if not to_sync:
             return
@@ -263,12 +265,21 @@ class InspectService:
                 updated = account_service.reauthorize_account(old_token, tokens, "inspect")
                 new_token = str(updated.get("access_token") or "")
                 client = OpenAIBackendAPI(new_token)
-                client.request_workspace_invite(workspace_id)
-                info = client.verify_workspace_access(workspace_id) if do_verify else {}
-                logger.debug({"event": "inspect_verify", "idx": idx, "email": email, "info": info})
-                acct = build_sub2api_account(updated, info, group_ids, pp_concurrency)
-                sub2api_service.push_accounts_batch(server, [acct])
-                self._append_log(f"[任务{idx}] 已更新令牌 + join 空间 + 推送 sub2api：{email}", "green")
+                # 逐个空间 join+verify+组装(name=email+空间)，屏蔽空间已在 targets 排除；单空间失败跳过不影响其它
+                accts = []
+                for ws in targets:
+                    try:
+                        client.request_workspace_invite(ws)
+                        info = client.verify_workspace_access(ws) if do_verify else {}
+                        logger.debug({"event": "inspect_verify", "idx": idx, "email": email, "workspace": ws, "info": info})
+                        accts.append(build_sub2api_account(updated, info, group_ids, pp_concurrency, workspace_id=ws))
+                    except Exception as ws_exc:
+                        self._append_log(f"[任务{idx}] 空间处理失败(跳过) {email} ws={ws}：{type(ws_exc).__name__}: {ws_exc}", "yellow")
+                        logger.debug({"event": "inspect_workspace_error", "idx": idx, "email": email, "workspace": ws, "error": repr(ws_exc)})
+                if not accts:
+                    raise RuntimeError("所有空间 join/组装均失败")
+                sub2api_service.push_accounts_batch(server, accts)
+                self._append_log(f"[任务{idx}] 已更新令牌 + join {len(accts)} 空间 + 推送 sub2api：{email}", "green")
                 return True
             except Exception as exc:
                 self._append_log(f"[任务{idx}] 处理失败 {email}：{type(exc).__name__}: {exc}", "red")

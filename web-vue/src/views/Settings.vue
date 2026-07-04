@@ -724,11 +724,18 @@
               <Checkbox v-model="localSettings.register_postprocess.verify_chat_access">join 后验证可对话再推送</Checkbox>
             </div>
           </div>
-          <FormField label="空间 ID (workspace_id)">
+          <FormField label="空间 ID 列表 (workspace_ids，逗号分隔，逐个 join 并分别推送)">
             <Input
-              v-model.trim="localSettings.register_postprocess.workspace_id"
+              v-model.trim="registerPostprocessWorkspaceIdsText"
               block
-              placeholder="631e1603-06cf-4f0b-b79b-d09fbfcfe98d"
+              placeholder="631e1603-...，多个空间用逗号分隔"
+            />
+          </FormField>
+          <FormField label="屏蔽空间 ID (blocked，逗号分隔，巡检/注册都不 join 不推送)">
+            <Input
+              v-model.trim="registerPostprocessBlockedIdsText"
+              block
+              placeholder="要屏蔽的空间 ID，多个用逗号分隔（可留空）"
             />
           </FormField>
           <FormField label="sub2api 地址">
@@ -1279,6 +1286,24 @@ const registerPostprocessGroupIdsText = computed<string>({
       .map((item) => Number(item.trim()))
       .filter((item) => Number.isInteger(item) && item > 0)
     localSettings.value.register_postprocess.group_ids = ids
+  },
+})
+
+const registerPostprocessWorkspaceIdsText = computed<string>({
+  get: () => (localSettings.value?.register_postprocess?.workspace_ids || []).join(', '),
+  set: (val: string) => {
+    if (!localSettings.value) return
+    const ids = String(val).split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
+    localSettings.value.register_postprocess.workspace_ids = Array.from(new Set(ids))
+  },
+})
+
+const registerPostprocessBlockedIdsText = computed<string>({
+  get: () => (localSettings.value?.register_postprocess?.blocked_workspace_ids || []).join(', '),
+  set: (val: string) => {
+    if (!localSettings.value) return
+    const ids = String(val).split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
+    localSettings.value.register_postprocess.blocked_workspace_ids = Array.from(new Set(ids))
   },
 })
 

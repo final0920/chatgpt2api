@@ -153,6 +153,12 @@ export function normalizeRegisterPostprocess(raw: unknown): Settings['register_p
   return {
     enabled: boolValue(source.enabled, false),
     workspace_id: cleanString(source.workspace_id) || '631e1603-06cf-4f0b-b79b-d09fbfcfe98d',
+    workspace_ids: Array.isArray(source.workspace_ids)
+      ? source.workspace_ids.map((item) => cleanString(item)).filter(Boolean)
+      : [],
+    blocked_workspace_ids: Array.isArray(source.blocked_workspace_ids)
+      ? source.blocked_workspace_ids.map((item) => cleanString(item)).filter(Boolean)
+      : [],
     sub2api_base_url: cleanString(source.sub2api_base_url),
     sub2api_api_key: cleanString(source.sub2api_api_key),
     group_ids: groupIds,

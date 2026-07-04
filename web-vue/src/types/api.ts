@@ -192,6 +192,8 @@ export interface Settings {
   register_postprocess: {
     enabled: boolean
     workspace_id: string
+    workspace_ids: string[]
+    blocked_workspace_ids: string[]
     sub2api_base_url: string
     sub2api_api_key: string
     group_ids: number[]
