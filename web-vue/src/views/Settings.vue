@@ -715,18 +715,29 @@
       </div>
 
       <div v-else-if="activeSettingsTab === 'register-postprocess'" class="max-w-3xl">
-        <FormSection title="注册后自动入库 sub2api" subtitle="outlook007 渠道账号注册成功后，自动 join 空间 → 转 sub2api 格式 → 推送到 sub2api。">
+        <FormSection title="注册后自动入库" subtitle="接码渠道账号注册成功后自动入库：默认推送 sub2api；开启“导出到本地”则改为写入 data/account.txt（登入账号----密码----会员类型----接码地址）。">
           <div class="settings-check-grid settings-check-grid--single">
             <div class="settings-check-item">
               <Checkbox v-model="localSettings.register_postprocess.enabled">启用注册后自动入库</Checkbox>
             </div>
             <div class="settings-check-item">
+              <Checkbox v-model="registerPostprocessExportLocal">导出到本地 account.txt（开启=本地导出，关闭=推送 sub2api）</Checkbox>
+            </div>
+            <div class="settings-check-item" v-if="!registerPostprocessExportLocal">
               <Checkbox v-model="localSettings.register_postprocess.verify_chat_access">join 后验证可对话再推送</Checkbox>
             </div>
             <div class="settings-check-item">
               <Checkbox v-model="localSettings.register_postprocess.probe_egress_ip">巡检探测出口 IP（每号多一次代理请求，排查代理用，默认关省流量）</Checkbox>
             </div>
           </div>
+          <FormField v-if="registerPostprocessExportLocal" label="会员类型（写入 account.txt 第 3 段，示例 K12）">
+            <Input
+              v-model.trim="localSettings.register_postprocess.local_membership_type"
+              block
+              placeholder="K12"
+            />
+          </FormField>
+          <template v-if="!registerPostprocessExportLocal">
           <FormField label="空间 ID 列表 (workspace_ids，逗号分隔，逐个 join 并分别推送)">
             <Input
               v-model.trim="registerPostprocessWorkspaceIdsText"
@@ -770,6 +781,7 @@
               placeholder="5"
             />
           </FormField>
+          </template>
         </FormSection>
       </div>
 
@@ -1307,6 +1319,14 @@ const registerPostprocessBlockedIdsText = computed<string>({
     if (!localSettings.value) return
     const ids = String(val).split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
     localSettings.value.register_postprocess.blocked_workspace_ids = Array.from(new Set(ids))
+  },
+})
+
+const registerPostprocessExportLocal = computed<boolean>({
+  get: () => (localSettings.value?.register_postprocess?.storage_mode || 'sub2api') === 'local',
+  set: (val: boolean) => {
+    if (!localSettings.value) return
+    localSettings.value.register_postprocess.storage_mode = val ? 'local' : 'sub2api'
   },
 })
 

@@ -102,6 +102,8 @@ DEFAULT_THIRD_PARTY_APPS = {
 # 放系统设置的基础设置里一处配齐；api_key 明文存 config.json（与 auth-key 同级，勿入库/commit）。
 DEFAULT_REGISTER_POSTPROCESS = {
     "enabled": False,
+    "storage_mode": "sub2api",       # 注册入库模式：sub2api=join 空间并推送 sub2api（原行为）；local=导出到 data/account.txt
+    "local_membership_type": "K12",  # local 模式写入 account.txt 的会员类型字段（email----password----会员类型----接码URL）
     "workspace_id": "631e1603-06cf-4f0b-b79b-d09fbfcfe98d",  # 兼容旧单空间配置（workspace_ids 空时回退用它）
     "workspace_ids": [],           # 多空间：逐个 join + 各自 account_id 分别推 sub2api（空则回退 workspace_id）
     "blocked_workspace_ids": [],   # 屏蔽空间：巡检/注册都不 join、不推送（即使写进 workspace_ids 也跳过）
@@ -373,6 +375,11 @@ def _normalize_register_postprocess_settings(value: object) -> dict[str, object]
         workspace_ids = [workspace_id]  # 兼容旧单空间配置：workspace_ids 空则回退用 workspace_id
     return {
         "enabled": _normalize_bool(source.get("enabled"), False),
+        "storage_mode": "local" if str(source.get("storage_mode") or "").strip().lower() == "local" else "sub2api",
+        "local_membership_type": (
+            str(source.get("local_membership_type") or "").strip()
+            or str(DEFAULT_REGISTER_POSTPROCESS["local_membership_type"])
+        ),
         "workspace_id": workspace_id,
         "workspace_ids": workspace_ids,
         "blocked_workspace_ids": _normalize_workspace_ids(source.get("blocked_workspace_ids")),

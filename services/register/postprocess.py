@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 from typing import Any
 
 from services.account_service import account_service
-from services.config import config
+from services.config import DATA_DIR, config
 from services.openai_backend_api import OpenAIBackendAPI
 from services.sub2api_service import push_accounts_batch
 from utils.log import logger
@@ -109,6 +110,33 @@ def build_sub2api_account(account: dict, info: dict, group_ids: list[int], concu
     }
 
 
+# ---- 注册入库：本地导出（storage_mode=local）----
+# 每行：登入账号----登入密码----会员类型----邮件接码地址，追加到 data/account.txt（多线程注册故加锁）。
+ACCOUNT_TXT_SEP = "----"
+ACCOUNT_TXT_FILE = DATA_DIR / "account.txt"
+_account_txt_lock = threading.Lock()
+
+
+def _export_account_to_local(result: dict, settings: dict) -> dict:
+    """local 模式：把注册成功的账号按 登入账号----登入密码----会员类型----接码地址 追加写入 data/account.txt。"""
+    email = str(result.get("email") or "").strip()
+    password = str(result.get("password") or "").strip()
+    membership = str(settings.get("local_membership_type") or "").strip() or "K12"
+    code_api_url = str(result.get("code_api_url") or "").strip()
+    line = ACCOUNT_TXT_SEP.join([email, password, membership, code_api_url])
+    try:
+        with _account_txt_lock:
+            ACCOUNT_TXT_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(ACCOUNT_TXT_FILE, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        logger.info(f"注册入库(本地导出): email={email} -> {ACCOUNT_TXT_FILE}")
+        return {"ok": True, "exported": "local", "path": str(ACCOUNT_TXT_FILE)}
+    except Exception as exc:
+        logger.warning(f"注册入库(本地导出)失败: email={email}, error={type(exc).__name__}: {exc}")
+        logger.debug({"event": "register_postprocess_local_export_error", "email": email, "error": repr(exc)})
+        return {"ok": False, "reason": str(exc)}
+
+
 def run_postprocess(result: dict) -> dict:
     """注册成功后的后处理编排。
 
@@ -120,6 +148,10 @@ def run_postprocess(result: dict) -> dict:
 
     if not settings.get("enabled"):
         return {"ok": False, "skipped": True, "reason": "disabled"}
+
+    # 注册入库模式：local=导出到本地 data/account.txt（不走 sub2api）；其余=原 join 空间 + 推送 sub2api 流程
+    if str(settings.get("storage_mode") or "sub2api").strip().lower() == "local":
+        return _export_account_to_local(result, settings)
 
     # 多空间：workspace_ids 逐个 join+推送；blocked_workspace_ids 里的空间跳过（不 join 不推送）
     workspace_ids = settings.get("workspace_ids") or []

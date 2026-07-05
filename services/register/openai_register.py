@@ -948,6 +948,7 @@ class PlatformRegistrar:
             "id_token": str(tokens.get("id_token") or "").strip(),
             "source_type": source_type,
             "mail_provider": str(mailbox.get("provider") or ""),
+            "code_api_url": str(mailbox.get("code_api_url") or ""),  # 供注册入库本地导出 account.txt 用（接码地址）
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -970,7 +971,7 @@ def worker(index: int) -> dict:
                 from services.register.postprocess import run_postprocess
                 pp = run_postprocess(result)
                 if pp.get("ok"):
-                    log(f'{result["email"]} 已推送 sub2api', "green")
+                    log(f'{result["email"]} 已导出到本地 account.txt' if pp.get("exported") == "local" else f'{result["email"]} 已推送 sub2api', "green")
                 elif not pp.get("skipped"):
                     log(f'{result["email"]} 注册后处理未成功: {pp.get("reason")}', "yellow")
             except Exception as e:

@@ -152,6 +152,8 @@ export function normalizeRegisterPostprocess(raw: unknown): Settings['register_p
     : [2]
   return {
     enabled: boolValue(source.enabled, false),
+    storage_mode: cleanString(source.storage_mode).toLowerCase() === 'local' ? 'local' : 'sub2api',
+    local_membership_type: cleanString(source.local_membership_type) || 'K12',
     workspace_id: cleanString(source.workspace_id) || '631e1603-06cf-4f0b-b79b-d09fbfcfe98d',
     workspace_ids: Array.isArray(source.workspace_ids)
       ? source.workspace_ids.map((item) => cleanString(item)).filter(Boolean)
