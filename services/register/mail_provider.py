@@ -2140,6 +2140,98 @@ def inspect_outlook007_pool(text: str) -> dict[str, Any]:
     return _parse_outlook007_pool_with_report(text)[1]
 
 
+# ---- outlook007 母箱裂变（导入时固化别名）+ 同母箱串行锁 ----
+# 与 gmail 池（smsbower/gmcode）不同：别名在导入时就裂变并落库进池（每个别名是独立池条目，
+# 有独立 used/failed/in_use 状态），不是运行时按需生成。裂变出的 5 个别名共用同一物理母箱与
+# 同一条接码链接（URL 里的 email= 保持母箱不变），故同母箱必须串行、不同母箱可并行。
+OUTLOOK007_ALIAS_PER_MOTHER = 5  # 导入时每个母箱裂变出的加号别名数（固定 5）
+
+_outlook007_locks_guard = Lock()
+_outlook007_mother_locks: dict[str, Lock] = {}
+
+
+def outlook007_mother_key(email: str) -> str:
+    """把任意 email（含 +别名）归一化到母箱 key：local 去 +后缀 + @domain，小写。"""
+    local, sep, domain = str(email or "").strip().lower().partition("@")
+    if not sep:
+        return str(email or "").strip().lower()
+    return f"{local.split('+', 1)[0]}@{domain}"
+
+
+def _outlook007_get_mother_lock(mother_key: str) -> Lock:
+    with _outlook007_locks_guard:
+        lock = _outlook007_mother_locks.get(mother_key)
+        if lock is None:
+            lock = Lock()
+            _outlook007_mother_locks[mother_key] = lock
+        return lock
+
+
+def _release_outlook007_mother_lock(mailbox: dict[str, Any]) -> None:
+    """释放 mailbox 关联母箱的串行锁（create 领用 → mark/release/reauth 收尾统一走这里）。"""
+    mother_key = str(mailbox.get("_outlook007_mother_key") or "")
+    if not mother_key:
+        address = str(mailbox.get("address") or "")
+        mother_key = outlook007_mother_key(address) if address else ""
+    if not mother_key:
+        return
+    lock = _outlook007_mother_locks.get(mother_key)
+    if lock is not None:
+        try:
+            lock.release()
+        except RuntimeError:
+            pass
+
+
+def _outlook007_alias_tag() -> str:
+    """5 个随机小写字母的别名 tag。"""
+    return "".join(random.choices(string.ascii_lowercase, k=5))
+
+
+def materialize_outlook007_aliases(old_text: str, new_text: str, per_mother: int = OUTLOOK007_ALIAS_PER_MOTHER) -> str:
+    """导入时把母箱行裂变成 per_mother 个加号别名，序列化回 email----接码URL 文本。
+
+    规则（每次导入都重新裂变）：
+    - new_text 里每个母箱 → 生成 per_mother 个 <local>+<5随机字母>@<domain>，接码 URL 原样复制
+      （URL 里的 email= 保持母箱不变：+别名都投递到母箱、接口查的是母箱）。
+    - old_text 里已固化的别名：母箱若本次未重新导入则原样保留（保住其池状态）；若本次重新导入
+      则丢弃旧别名，按 new 重新裂变（同一母箱不会翻倍）。
+    - new_text 为空（仅重新保存配置，未导入）：old 全部原样保留，不重新裂变。
+    """
+    per = max(1, int(per_mother or OUTLOOK007_ALIAS_PER_MOTHER))
+    # 本次导入的母箱：mother_key -> (原始母箱邮箱[保留大小写], 接码URL)，同母箱后出现的覆盖先出现的
+    new_mothers: dict[str, tuple[str, str]] = {}
+    for cred in parse_outlook007_pool(new_text or ""):
+        mk = outlook007_mother_key(cred["email"])
+        if mk:
+            new_mothers[mk] = (cred["email"], cred["code_api_url"])
+    lines: list[str] = []
+    seen_alias: set[str] = set()
+    # 1) 保留 old 里"本次未重新导入的母箱"的既有别名（原样）
+    for cred in parse_outlook007_pool(old_text or ""):
+        if outlook007_mother_key(cred["email"]) in new_mothers:
+            continue  # 本次重新导入 → 丢弃旧别名，下面重新裂变
+        key = cred["email"].strip().lower()
+        if key in seen_alias:
+            continue
+        seen_alias.add(key)
+        lines.append(f'{cred["email"]}----{cred["code_api_url"]}')
+    # 2) 对本次导入的每个母箱重新裂变 per 个新别名（tag 随机，母箱内查重）
+    for mother_email, code_api_url in new_mothers.values():
+        made = 0
+        attempts = 0
+        while made < per and attempts < per * 20:
+            attempts += 1
+            alias = outlook_alias_address(mother_email, _outlook007_alias_tag())
+            key = alias.strip().lower()
+            if key in seen_alias:
+                continue
+            seen_alias.add(key)
+            lines.append(f"{alias}----{code_api_url}")
+            made += 1
+    return "\n".join(lines)
+
+
 def _normalize_outlook007_pool(value: Any) -> list[dict[str, str]]:
     """outlook007 邮箱池：支持纯文本或对象列表；直注模式（不展开加号别名）。"""
     items: list[dict[str, str]] = []
@@ -2222,27 +2314,57 @@ class Outlook007Provider(BaseMailProvider):
     def create_mailbox(self, username: str | None = None) -> dict[str, Any]:
         if not self.pool:
             raise RuntimeError("outlook007 邮箱池为空，请在邮箱配置中导入 email----接码链接")
+        chosen: dict[str, str] | None = None
+        chosen_mother = ""
         with _outlook007_state_lock:
             store = _load_outlook007_state()
-            credential = next((item for item in self.pool if _outlook007_credential_available(store, item)), None)
-            if credential is None:
+            for item in self.pool:
+                if not _outlook007_credential_available(store, item):
+                    continue
+                mother_key = outlook007_mother_key(item["email"])
+                # 同母箱串行：非阻塞抢母箱锁；抢不到说明该母箱已有别名在注册周期内，
+                # 跳到别的母箱的别名（不同母箱可并行，同母箱绝不并发 → 避免接码错乱）。
+                if not _outlook007_get_mother_lock(mother_key).acquire(blocking=False):
+                    continue
+                chosen = item
+                chosen_mother = mother_key
+                break
+            if chosen is None:
                 raise RuntimeError(
                     f"[{self.label}] outlook007 邮箱池暂无可用邮箱"
-                    f"（共 {len(self.pool)} 个，已用尽或全部占用），请导入新邮箱或重置池状态"
+                    f"（共 {len(self.pool)} 个，已用尽/全部占用，或同母箱正在注册），请导入新邮箱或重置池状态"
                 )
-            store[credential["email"].strip().lower()] = {
+            store[chosen["email"].strip().lower()] = {
                 "state": "in_use", "reason": "", "updated_at": datetime.now(timezone.utc).isoformat(),
             }
             _save_outlook007_state(store)
-        return {
+        mailbox = {
             "provider": self.name,
             "provider_ref": self.provider_ref,
-            "address": credential["email"],
-            "login_email": credential["email"],
+            "address": chosen["email"],
+            "login_email": chosen["email"],
             "alias_of": "",
             "label": self.label,
-            "code_api_url": credential["code_api_url"],
+            "code_api_url": chosen["code_api_url"],
+            "_outlook007_mother_key": chosen_mother,
         }
+        # 裂变别名共用一个物理母箱：发码前把母箱当前"最新邮件"预置进已见集合，
+        # 让基类 wait_for_code 天然跳过它，避免取到上一个别名残留的旧验证码。
+        self._prime_seen_baseline(mailbox)
+        return mailbox
+
+    def _prime_seen_baseline(self, mailbox: dict[str, Any]) -> None:
+        """把母箱当前最新邮件的追踪 ref 预置进 _seen_code_message_refs（基类据此去重）。读不到就不预置。"""
+        try:
+            baseline = self.fetch_latest_message(mailbox)
+        except Exception:
+            baseline = None
+        if not baseline:
+            return
+        ref = _message_tracking_ref(baseline)
+        seen = mailbox.setdefault("_seen_code_message_refs", [])
+        if isinstance(seen, list) and ref not in seen:
+            seen.append(ref)
 
     def fetch_latest_message(self, mailbox: dict[str, Any]) -> dict[str, Any] | None:
         """轮询接码链接，取最新一封邮件，交给基类 wait_for_code + _extract_code 提取验证码。
@@ -2303,6 +2425,37 @@ class Outlook007Provider(BaseMailProvider):
             "sender": str(data.get("from") or data.get("sender") or ""),
             "received_at": data.get("received_at") or data.get("received") or data.get("date") or "",
         }
+
+
+def outlook007_reauth_prepare(mailbox: dict[str, Any], mail_config: dict) -> None:
+    """reauth / 自动巡检场景（非 create_mailbox 领用）：阻塞获取 outlook007 母箱串行锁 + 预置 baseline。
+
+    裂变后同母箱多个别名共用一个物理母箱，自动巡检并发重授权时若同母箱并发读码会接码错乱，
+    故阻塞加锁串行；并把母箱当前最新邮件预置进已见集合，wait_for_code 只取新码。
+    用完须调 outlook007_reauth_finish 释放。"""
+    address = str(mailbox.get("address") or "")
+    mother_key = str(mailbox.get("_outlook007_mother_key") or "") or outlook007_mother_key(address)
+    mailbox["_outlook007_mother_key"] = mother_key
+    _outlook007_get_mother_lock(mother_key).acquire()  # 阻塞，保证同母箱串行
+    prov = None
+    try:
+        prov = _create_provider(mail_config, Outlook007Provider.name, str(mailbox.get("provider_ref") or ""))
+        baseline = prov.fetch_latest_message(mailbox)
+        if baseline:
+            ref = _message_tracking_ref(baseline)
+            seen = mailbox.setdefault("_seen_code_message_refs", [])
+            if isinstance(seen, list) and ref not in seen:
+                seen.append(ref)
+    except Exception:
+        pass
+    finally:
+        if prov is not None:
+            prov.close()
+
+
+def outlook007_reauth_finish(mailbox: dict[str, Any]) -> None:
+    """释放 reauth 期间持有的 outlook007 母箱串行锁。"""
+    _release_outlook007_mother_lock(mailbox)
 
 
 # ==================== smsbower-gmail 接码渠道 ====================
@@ -2934,12 +3087,13 @@ def mark_mailbox_result(mailbox: dict, *, success: bool, error: Exception | str 
         return
     if provider_name == Outlook007Provider.name:
         address = str(mailbox.get("address") or "").strip()
-        if not address:
-            return
-        if success:
-            _set_outlook007_state(address, "used")
-        else:
-            _set_outlook007_state(address, "failed", str(error or "").strip()[:300])
+        if address:
+            if success:
+                _set_outlook007_state(address, "used")
+            else:
+                _set_outlook007_state(address, "failed", str(error or "").strip()[:300])
+        # 释放母箱串行锁：同母箱其余别名此后才可被领用
+        _release_outlook007_mother_lock(mailbox)
         return
     if str(mailbox.get("provider") or "") != OutlookTokenProvider.name:
         return
@@ -2971,6 +3125,7 @@ def release_mailbox(mailbox: dict) -> None:
     provider_name = str(mailbox.get("provider") or "")
     if provider_name == Outlook007Provider.name:
         _release_outlook007_state(str(mailbox.get("address") or ""))
+        _release_outlook007_mother_lock(mailbox)
         return
     if provider_name != OutlookTokenProvider.name:
         return

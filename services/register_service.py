@@ -38,13 +38,7 @@ def _serialize_outlook007_pool(credentials: list[dict]) -> str:
 
 
 def _merge_outlook007_pool(old_text: str, new_text: str) -> str:
-    """合并 outlook007 邮箱池，按邮箱去重，新导入的同名邮箱覆盖旧接码链接。"""
-    merged: dict[str, dict] = {}
-    for credential in mail_provider.parse_outlook007_pool(old_text or ""):
-        merged[credential["email"].strip().lower()] = credential
-    for credential in mail_provider.parse_outlook007_pool(new_text or ""):
-        merged[credential["email"].strip().lower()] = credential
-    return _serialize_outlook007_pool(list(merged.values()))
+    return mail_provider.materialize_outlook007_aliases(old_text, new_text, 5)
 
 
 def _merge_smsbower_gmail_pool(old_text: str, new_text: str) -> str:
@@ -166,10 +160,11 @@ class RegisterService:
             if provider.get("type") == "outlook007":
                 pool_text = str(provider.get("mailboxes") or "")
                 credentials = mail_provider.parse_outlook007_pool(pool_text)
+                base_count = len({mail_provider.outlook007_mother_key(c["email"]) for c in credentials})
                 provider["mailboxes"] = ""
                 provider["mailboxes_count"] = len(credentials)
-                provider["mailboxes_base_count"] = len(credentials)
-                provider["mailboxes_alias_count"] = 0
+                provider["mailboxes_base_count"] = base_count
+                provider["mailboxes_alias_count"] = len(credentials)
                 provider["mailboxes_preview"] = [self._mask_email(c["email"]) for c in credentials]
                 provider["mailboxes_stats"] = mail_provider.outlook007_pool_stats(credentials)
                 provider["mailboxes_parse_stats"] = mail_provider.inspect_outlook007_pool(pool_text)

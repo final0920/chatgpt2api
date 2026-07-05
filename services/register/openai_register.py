@@ -1085,8 +1085,12 @@ def reauthorize_login(email: str, proxy: str | None = None, index: int = 0, prob
         raise RuntimeError(f"邮箱 {address} 不在 outlook007 / smsbower-gmail / gmcode-gmail 接码池，无法自动重新授权（请确认该邮箱已导入邮箱池）")
     # smsbower / gmcode 同为 gmail 加号别名渠道，reauth 都要走母箱串行锁 + baseline（覆盖发码→取码）
     is_gmail_alias = str(mailbox.get("provider") or "") in {"smsbower_gmail", "gmcode_gmail"}
+    # outlook007 裂变后同母箱多别名共用一个物理母箱，自动巡检并发重授权同样要母箱串行锁 + baseline
+    is_outlook007 = str(mailbox.get("provider") or "") == "outlook007"
     if is_gmail_alias:
         mail_provider.smsbower_reauth_prepare(mailbox, _mail_config())  # 母箱串行锁 + baseline，覆盖发码→取码
+    elif is_outlook007:
+        mail_provider.outlook007_reauth_prepare(mailbox, _mail_config())  # 同母箱串行锁 + baseline
     registrar = PlatformRegistrar(proxy if proxy is not None else config["proxy"])
     try:
         # 出口 IP 探测默认关闭（每号多一次 ipify 请求走代理耗流量/连接），巡检可配置开启用于排查代理
@@ -1106,3 +1110,5 @@ def reauthorize_login(email: str, proxy: str | None = None, index: int = 0, prob
         registrar.close()
         if is_gmail_alias:
             mail_provider.smsbower_reauth_finish(mailbox)
+        elif is_outlook007:
+            mail_provider.outlook007_reauth_finish(mailbox)
