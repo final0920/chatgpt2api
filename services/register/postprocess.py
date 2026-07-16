@@ -110,7 +110,7 @@ def build_sub2api_account(account: dict, info: dict, group_ids: list[int], concu
     }
 
 
-# ---- 注册入库：本地导出（storage_mode=local）----
+# ---- 注册入库：本地导出（export_local=True）----
 # 每行：登入账号----登入密码----会员类型----邮件接码地址，追加到 data/account.txt（多线程注册故加锁）。
 ACCOUNT_TXT_SEP = "----"
 ACCOUNT_TXT_FILE = DATA_DIR / "account.txt"
@@ -137,22 +137,11 @@ def _export_account_to_local(result: dict, settings: dict) -> dict:
         return {"ok": False, "reason": str(exc)}
 
 
-def run_postprocess(result: dict) -> dict:
-    """注册成功后的后处理编排。
+def _push_to_sub2api(result: dict, settings: dict, email: str) -> dict:
+    """sub2api 入库：多空间逐个 join + verify + 组装，再一次性 BatchCreate 推送。
 
-    result: register() 返回值（email / access_token / refresh_token / id_token / mail_provider ...）
     返回 {ok, skipped?, reason?, push_result?}；任何异常都被吞掉并记日志，绝不向上抛。
     """
-    email = str(result.get("email") or "").strip()
-    settings = config.get_register_postprocess_settings()
-
-    if not settings.get("enabled"):
-        return {"ok": False, "skipped": True, "reason": "disabled"}
-
-    # 注册入库模式：local=导出到本地 data/account.txt（不走 sub2api）；其余=原 join 空间 + 推送 sub2api 流程
-    if str(settings.get("storage_mode") or "sub2api").strip().lower() == "local":
-        return _export_account_to_local(result, settings)
-
     # 多空间：workspace_ids 逐个 join+推送；blocked_workspace_ids 里的空间跳过（不 join 不推送）
     workspace_ids = settings.get("workspace_ids") or []
     blocked = {str(w).strip() for w in (settings.get("blocked_workspace_ids") or []) if str(w).strip()}
@@ -231,3 +220,63 @@ def run_postprocess(result: dict) -> dict:
         logger.warning(f"注册后处理失败: email={email}, error={type(exc).__name__}: {exc}")
         logger.debug({"event": "register_postprocess_error", "email": email, "error": repr(exc)})
         return {"ok": False, "reason": str(exc)}
+
+
+def run_postprocess(result: dict) -> dict:
+    """注册成功后的后处理编排：本地导出 / 推送 sub2api，两者可同时进行、互不影响。
+
+    result: register() 返回值（email / access_token / refresh_token / id_token / mail_provider ...）
+    返回 {ok, skipped?, reason?, summary?, targets, local?, sub2api?}；任何异常都被吞掉并记日志，绝不向上抛。
+    """
+    email = str(result.get("email") or "").strip()
+    settings = config.get_register_postprocess_settings()
+
+    if not settings.get("enabled"):
+        return {"ok": False, "skipped": True, "reason": "disabled"}
+
+    export_local = bool(settings.get("export_local"))
+    push_sub2api = bool(settings.get("push_sub2api", True))
+    if not export_local and not push_sub2api:
+        logger.warning(f"注册后处理跳过: email={email}, 原因=未选任何入库目标(本地/sub2api 都关)")
+        return {"ok": False, "skipped": True, "reason": "no_storage_target"}
+
+    out: dict[str, Any] = {"targets": []}
+    attempted: list[bool] = []   # 各实际执行目标成功与否（被跳过的不计入）
+    done: list[str] = []         # 成功目标的中文摘要
+    reasons: list[str] = []      # 失败/跳过原因
+
+    # ① 本地导出（可与 sub2api 并存，互不影响）
+    if export_local:
+        out["targets"].append("local")
+        local_res = _export_account_to_local(result, settings)
+        out["local"] = local_res
+        if local_res.get("ok"):
+            attempted.append(True)
+            done.append("已导出到本地 account.txt")
+        else:
+            attempted.append(False)
+            reasons.append(f"本地导出:{local_res.get('reason')}")
+
+    # ② 推送 sub2api（原 join 空间 + 转 sub2api + 推送 流程）
+    if push_sub2api:
+        out["targets"].append("sub2api")
+        push_res = _push_to_sub2api(result, settings, email)
+        out["sub2api"] = push_res
+        if push_res.get("ok"):
+            attempted.append(True)
+            done.append("已推送 sub2api")
+        else:
+            if not push_res.get("skipped"):
+                attempted.append(False)  # 未配置等"跳过"不计入失败
+            reasons.append(f"sub2api:{push_res.get('reason')}")
+
+    # 全部目标都被跳过（未配置等）→ 整体视为跳过，保持安静（与原行为一致）
+    if not attempted:
+        return {"ok": False, "skipped": True, "targets": out["targets"],
+                "reason": "; ".join(reasons) or "no_storage_target"}
+
+    out["ok"] = all(attempted)
+    out["summary"] = " + ".join(done)
+    if reasons:
+        out["reason"] = "; ".join(reasons)
+    return out

@@ -191,7 +191,8 @@ export interface Settings {
   }
   register_postprocess: {
     enabled: boolean
-    storage_mode: 'sub2api' | 'local'
+    export_local: boolean
+    push_sub2api: boolean
     local_membership_type: string
     workspace_id: string
     workspace_ids: string[]

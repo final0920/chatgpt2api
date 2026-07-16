@@ -150,9 +150,17 @@ export function normalizeRegisterPostprocess(raw: unknown): Settings['register_p
       .map((item) => Number(item))
       .filter((item) => Number.isInteger(item) && item > 0)
     : [2]
+  // 注册入库目标：export_local / push_sub2api 可同时开；兼容旧单选 storage_mode（local→仅本地；其余非空→仅 sub2api）
+  const legacyMode = cleanString(source.storage_mode).toLowerCase()
+  const hasNewFlags = 'export_local' in source || 'push_sub2api' in source
+  const exportLocal = hasNewFlags ? boolValue(source.export_local, false) : legacyMode === 'local'
+  const pushSub2api = hasNewFlags
+    ? boolValue(source.push_sub2api, true)
+    : legacyMode === 'local' ? false : true
   return {
     enabled: boolValue(source.enabled, false),
-    storage_mode: cleanString(source.storage_mode).toLowerCase() === 'local' ? 'local' : 'sub2api',
+    export_local: exportLocal,
+    push_sub2api: pushSub2api,
     local_membership_type: cleanString(source.local_membership_type) || 'K12',
     workspace_id: cleanString(source.workspace_id) || '631e1603-06cf-4f0b-b79b-d09fbfcfe98d',
     workspace_ids: Array.isArray(source.workspace_ids)

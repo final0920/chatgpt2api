@@ -970,10 +970,11 @@ def worker(index: int) -> dict:
             try:
                 from services.register.postprocess import run_postprocess
                 pp = run_postprocess(result)
-                if pp.get("ok"):
-                    log(f'{result["email"]} 已导出到本地 account.txt' if pp.get("exported") == "local" else f'{result["email"]} 已推送 sub2api', "green")
-                elif not pp.get("skipped"):
-                    log(f'{result["email"]} 注册后处理未成功: {pp.get("reason")}', "yellow")
+                if not pp.get("skipped"):
+                    if pp.get("summary"):
+                        log(f'{result["email"]} {pp["summary"]}', "green")
+                    if not pp.get("ok"):
+                        log(f'{result["email"]} 注册入库未完全成功: {pp.get("reason")}', "yellow")
             except Exception as e:
                 log(f'{result["email"]} 注册后处理异常: {e}', "yellow")
         with stats_lock:
